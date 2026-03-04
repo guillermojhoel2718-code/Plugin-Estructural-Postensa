@@ -1,0 +1,18 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build",
+            "type": "shell",
+            "command": "dotnet",
+            "args": [
+                "build"
+            ]
+        },
+        {
+            "label": "debug",
+            "type": "shell",
+            "command":"${command:workbench.action.debug.start}"
+        }
+    ]
+}

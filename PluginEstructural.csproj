@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AssemblyName>PluginEstructural</AssemblyName>
+    <PlatformTarget>x64</PlatformTarget>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <OutputPath>C:\ProgramData\Autodesk\Revit\Addins\2025\</OutputPath>
+    <Optimize>False</Optimize>
+    <DebugSymbols>True</DebugSymbols>
+    <DebugType>Portable</DebugType>
+    <NoWarn>MSB3277</NoWarn>
+    <Deterministic>false</Deterministic>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="ThisApplication.Designer.cs" />
+    <Compile Remove="ThisApplication.cs" />
+    <Compile Remove="Properties\AssemblyInfo.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="RevitAPI">
+      <HintPath>C:\Program Files\Autodesk\Revit 2025\RevitAPI.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>C:\Program Files\Autodesk\Revit 2025\RevitAPIUI.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="PreBuild" BeforeTargets="PreBuildEvent">
+    <Exec Command="if exist &quot;$(OutputPath)PluginEstructural.dll&quot; del &quot;$(OutputPath)PluginEstructural.dll&quot;" />
+  </Target>
+
+</Project>

@@ -1,0 +1,15 @@
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Addin\PluginEstructural.deps.json
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Addin\PluginEstructural.dll
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Addin\PluginEstructural.pdb
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\PluginEstructural.csproj.AssemblyReference.cache
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\PluginEstructural.GeneratedMSBuildEditorConfig.editorconfig
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\PluginEstructural.AssemblyInfoInputs.cache
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\PluginEstructural.AssemblyInfo.cs
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\PluginEstructural.csproj.CoreCompileInputs.cache
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\PluginEstructural.dll
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\refint\PluginEstructural.dll
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\PluginEstructural.pdb
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\ref\PluginEstructural.dll
+C:\ProgramData\Autodesk\Revit\Addins\2025\PluginEstructural.deps.json
+C:\ProgramData\Autodesk\Revit\Addins\2025\PluginEstructural.dll
+C:\ProgramData\Autodesk\Revit\Addins\2025\PluginEstructural.pdb
