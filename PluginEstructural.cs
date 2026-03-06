@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -310,7 +310,7 @@ namespace PluginEstructural
         {
             var dic = new Dictionary<string, string>();
             var nombres = new[] { "b", "h", "Ancho", "Alto", "Espesor", "Longitud",
-                "Nivel", "Desfase base", "Desfase superior", "Tipo" };
+                "Desfase base", "Desfase superior", "Tipo" };
             foreach (var n in nombres)
             {
                 var p = e.LookupParameter(n);
@@ -324,21 +324,86 @@ namespace PluginEstructural
             dic["Familia y Tipo"] = paramFto != null && paramFto.AsValueString() != null
                 ? paramFto.AsValueString() : (e.Category?.Name + " - " + e.Name);
 
-            var paramLvl = e.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM) ??
-                           e.get_Parameter(BuiltInParameter.SCHEDULE_LEVEL_PARAM) ??
-                           e.get_Parameter(BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM);
-            if (paramLvl != null && paramLvl.AsElementId() != ElementId.InvalidElementId)
+            // ── Deteccion de nivel ampliada ─────────────────────────────────
+            // 1. Recorrer lista de parametros built-in de nivel
+            string nivel = null;
+            var bipNiveles = new[]
             {
-                var lvl = e.Document.GetElement(paramLvl.AsElementId());
-                dic["Nivel / Restriccion"] = lvl?.Name ?? "N/A";
-            }
-            else
+                BuiltInParameter.FAMILY_LEVEL_PARAM,
+                BuiltInParameter.SCHEDULE_LEVEL_PARAM,
+                BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM,
+                BuiltInParameter.FAMILY_BASE_LEVEL_PARAM,
+                BuiltInParameter.WALL_BASE_CONSTRAINT,
+                BuiltInParameter.ROOF_CONSTRAINT_LEVEL_PARAM,
+                BuiltInParameter.STAIRS_BASE_LEVEL_PARAM,
+                BuiltInParameter.INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM,
+                BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM,
+            };
+            foreach (var bip in bipNiveles)
             {
-                dic["Nivel / Restriccion"] = "N/A";
+                try
+                {
+                    var p = e.get_Parameter(bip);
+                    if (p == null || p.StorageType != StorageType.ElementId) continue;
+                    var eid = p.AsElementId();
+                    if (eid == ElementId.InvalidElementId) continue;
+                    var lvl = e.Document.GetElement(eid) as Level;
+                    if (lvl != null) { nivel = lvl.Name; break; }
+                }
+                catch { }
             }
 
+            // 2. Plano de trabajo (SketchPlane)
+            if (nivel == null)
+            {
+                try
+                {
+                    var p = e.get_Parameter(BuiltInParameter.SKETCH_PLANE_PARAM);
+                    if (p != null && p.StorageType == StorageType.ElementId)
+                    {
+                        var sp = e.Document.GetElement(p.AsElementId()) as SketchPlane;
+                        if (sp != null) nivel = "Plano: " + sp.Name;
+                    }
+                }
+                catch { }
+            }
+
+            // 3. Elemento anfitrion (FamilyInstance hosted)
+            if (nivel == null && e is FamilyInstance fi && fi.Host != null)
+            {
+                try
+                {
+                    foreach (var bip in new[] { BuiltInParameter.FAMILY_LEVEL_PARAM, BuiltInParameter.SCHEDULE_LEVEL_PARAM })
+                    {
+                        var p = fi.Host.get_Parameter(bip);
+                        if (p == null || p.StorageType != StorageType.ElementId) continue;
+                        var lvl = e.Document.GetElement(p.AsElementId()) as Level;
+                        if (lvl != null) { nivel = lvl.Name; break; }
+                    }
+                }
+                catch { }
+            }
+
+            // 4. Fallback: nivel mas cercano por Z del bounding box
+            if (nivel == null && bb != null)
+            {
+                try
+                {
+                    double z = bb.Min.Z;
+                    var nearest = new FilteredElementCollector(e.Document)
+                        .OfClass(typeof(Level)).Cast<Level>()
+                        .Where(l => l.Elevation <= z + 0.5)
+                        .OrderByDescending(l => l.Elevation)
+                        .FirstOrDefault();
+                    if (nearest != null) nivel = "~" + nearest.Name;
+                }
+                catch { }
+            }
+
+            dic["Nivel / Restriccion"] = nivel ?? "Sin nivel";
             return dic;
         }
+
     }
 
     // ════════════════════════════════════════════════════════
@@ -349,9 +414,10 @@ namespace PluginEstructural
         static readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
 
         internal static string Describir(string cat, string tipo,
-            Dictionary<string, string> antes, Dictionary<string, string> despues)
+            Dictionary<string, string> antes, Dictionary<string, string> despues,
+            string nivel = null, string famTipo = null)
         {
-            string fallback = Auto(tipo, antes, despues);
+            string fallback = Auto(tipo, antes, despues, famTipo);
             string key = Config.Get("GEMINI_API_KEY");
             if (string.IsNullOrEmpty(key)) return fallback;
             try
@@ -359,47 +425,58 @@ namespace PluginEstructural
                 var cambiosList = new List<string>();
                 foreach (var k in antes.Keys)
                     if (despues.ContainsKey(k) && antes[k] != despues[k])
-                        cambiosList.Add(k + ": " + antes[k] + " a " + despues[k]);
+                        cambiosList.Add(k + ": [" + antes[k] + "] → [" + despues[k] + "]");
                 if (cambiosList.Count == 0) return fallback;
 
-                string prompt = "Soy BIM Manager de estructuras. Genera descripcion tecnica corta " +
-                    "(max 100 caracteres) en espanol de este cambio en Revit. Elemento: " + tipo +
-                    " categoria " + cat + ". Cambios: " + string.Join(", ", cambiosList) +
-                    ". Solo la descripcion sin comillas ni puntuacion al final.";
+                // Dimensiones nuevas relevantes
+                var dims = new List<string>();
+                foreach (var k in new[] { "b", "h", "Ancho", "Alto", "Espesor", "Longitud" })
+                    if (despues.ContainsKey(k)) dims.Add(k + "=" + despues[k]);
+
+                string prompt =
+                    "Eres BIM Manager de estructuras en POSTENSA Design & Build. " +
+                    "Redacta UNA descripcion tecnica en español (MAXIMO 130 caracteres, SIN comillas, SIN punto final). " +
+                    "Se especifico sobre el cambio: menciona valores numericos si los hay, y la implicacion estructural. " +
+                    "Elemento: " + (famTipo ?? tipo) + " | Categoria: " + cat +
+                    (nivel != null ? " | Nivel: " + nivel : "") +
+                    (dims.Count > 0 ? " | Dimensiones actuales: " + string.Join(", ", dims) : "") +
+                    " | Cambios detectados: " + string.Join(" / ", cambiosList) + ".";
 
                 string json = "{\"contents\":[{\"parts\":[{\"text\":\"" +
-                    prompt.Replace("\\", "").Replace("\"", "'").Replace("\n", " ") + "\"}]}]}";
+                    prompt.Replace("\\", "").Replace("\"", "'").Replace("\n", " ") + "\"}]}]," +
+                    "\"generationConfig\":{\"maxOutputTokens\":60,\"temperature\":0.2}}";
 
                 string url = "https://generativelanguage.googleapis.com/v1beta/models/" +
                     "gemini-1.5-flash:generateContent?key=" + key;
 
                 var t = _http.PostAsync(url, new StringContent(json, Encoding.UTF8, "application/json"));
-                t.Wait(18000);
+                t.Wait(15000);
                 if (!t.Result.IsSuccessStatusCode) return fallback;
                 string resp = t.Result.Content.ReadAsStringAsync().Result;
                 int i = resp.IndexOf("\"text\":"); if (i < 0) return fallback;
                 i = resp.IndexOf("\"", i + 7) + 1;
                 int f = resp.IndexOf("\"", i);
                 if (f <= i) return fallback;
-                string res = resp.Substring(i, f - i).Trim().Replace("\\n", " ");
+                string res = resp.Substring(i, f - i).Trim().Replace("\\n", " ").Replace("\\u003e", ">");
                 return string.IsNullOrEmpty(res) ? fallback : res;
             }
             catch { return fallback; }
         }
 
-        internal static string NuevoDesc(string cat, string tipo)
-            => "Nuevo elemento: " + tipo + " (" + cat + ")";
+        internal static string NuevoDesc(string cat, string famTipo)
+            => "Nuevo elemento: " + famTipo + " (" + cat + ")";
 
-        internal static string ElimDesc(string cat)
-            => "Elemento eliminado de categoria: " + cat;
+        internal static string ElimDesc(string cat, string famTipo)
+            => "Eliminado: " + famTipo + " (" + cat + ")";
 
-        static string Auto(string tipo, Dictionary<string, string> a, Dictionary<string, string> d)
+        static string Auto(string tipo, Dictionary<string, string> a, Dictionary<string, string> d, string famTipo)
         {
             var cambios = a.Keys.Where(k => d.ContainsKey(k) && a[k] != d[k])
-                .Select(k => k + ": " + a[k] + " a " + d[k]).ToList();
+                .Select(k => k + ": " + a[k] + " > " + d[k]).ToList();
+            string nombre = famTipo ?? tipo;
             return cambios.Count == 0
-                ? tipo + ": cambio en geometria o posicion"
-                : tipo + " modificado — " + string.Join(", ", cambios.Take(3));
+                ? nombre + ": cambio en geometria o posicion"
+                : nombre + " — " + string.Join(", ", cambios.Take(3));
         }
     }
 
@@ -729,21 +806,28 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
             foreach (var e in nuevos)
             {
                 var pd = HashElem.ParamsLegibles(e);
-                lista.Add(("NUEVO", Gemini.NuevoDesc(e.Category?.Name ?? "", e.Name),
-                    e.Category?.Name ?? "", e.Name, e.UniqueId, pd.ContainsKey("Familia y Tipo") ? pd["Familia y Tipo"] : "", pd.ContainsKey("Nivel / Restriccion") ? pd["Nivel / Restriccion"] : ""));
+                string ft = pd.ContainsKey("Familia y Tipo") ? pd["Familia y Tipo"] : "";
+                string nv = pd.ContainsKey("Nivel / Restriccion") ? pd["Nivel / Restriccion"] : "";
+                lista.Add(("NUEVO", Gemini.NuevoDesc(e.Category?.Name ?? "", ft),
+                    e.Category?.Name ?? "", e.Name, e.UniqueId, ft, nv));
             }
             foreach (var e in mods)
             {
                 var pa = ant.ContainsKey(e.UniqueId) ? ant[e.UniqueId].pars : new Dictionary<string, string>();
                 var pd = HashElem.ParamsLegibles(e);
-                lista.Add(("MODIFICADO", Gemini.Describir(e.Category?.Name ?? "", e.Name, pa, pd),
-                    e.Category?.Name ?? "", e.Name, e.UniqueId, pd.ContainsKey("Familia y Tipo") ? pd["Familia y Tipo"] : "", pd.ContainsKey("Nivel / Restriccion") ? pd["Nivel / Restriccion"] : ""));
+                string ft = pd.ContainsKey("Familia y Tipo") ? pd["Familia y Tipo"] : "";
+                string nv = pd.ContainsKey("Nivel / Restriccion") ? pd["Nivel / Restriccion"] : "";
+                lista.Add(("MODIFICADO",
+                    Gemini.Describir(e.Category?.Name ?? "", e.Name, pa, pd, nv, ft),
+                    e.Category?.Name ?? "", e.Name, e.UniqueId, ft, nv));
             }
             foreach (var uid in elims)
             {
                 var pa = ant[uid].pars;
-                lista.Add(("ELIMINADO", Gemini.ElimDesc(ant[uid].cat),
-                    ant[uid].cat, ant[uid].tipo, uid, pa.ContainsKey("Familia y Tipo") ? pa["Familia y Tipo"] : ant[uid].cat + " - " + ant[uid].tipo, pa.ContainsKey("Nivel / Restriccion") ? pa["Nivel / Restriccion"] : "N/A"));
+                string ft = pa.ContainsKey("Familia y Tipo") ? pa["Familia y Tipo"] : ant[uid].cat + " - " + ant[uid].tipo;
+                string nv = pa.ContainsKey("Nivel / Restriccion") ? pa["Nivel / Restriccion"] : "Sin nivel";
+                lista.Add(("ELIMINADO", Gemini.ElimDesc(ant[uid].cat, ft),
+                    ant[uid].cat, ant[uid].tipo, uid, ft, nv));
             }
 
             GenerarReporte(sesion, doc.Title, lista);
@@ -771,7 +855,7 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
         void GenerarReporte(string sesion, string proyecto,
             List<(string estado, string desc, string cat, string tipo, string uid, string famTipo, string nivel)> lista)
         {
-            string nomArchivo = "REPORTE_BIM_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".xlsx";
+            string nomArchivo = "INFORME_BIM_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".xlsx";
             string rutaExcel  = Path.Combine(sesion, nomArchivo);
             string fecha      = DateTime.Now.ToString("dd/MM/yyyy HH:mm");
             string usuario    = Environment.UserName;
@@ -779,93 +863,106 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
             int    nNuevos    = lista.Count(c => c.estado == "NUEVO");
             int    nMods      = lista.Count(c => c.estado == "MODIFICADO");
             int    nElims     = lista.Count(c => c.estado == "ELIMINADO");
+            string viewerUrl  = Config.Get("VIEWER_URL") ?? "";
 
             try
             {
                 using (var wb = new ClosedXML.Excel.XLWorkbook())
                 {
                     // ── PALETA CORPORATIVA ───────────────────────────────────
-                    // Solo un azul Postensa + escala de grises/blancos
-                    var cAzul      = ClosedXML.Excel.XLColor.FromHtml("#1CA0E6"); // azul único
-                    var cGrisOsc   = ClosedXML.Excel.XLColor.FromHtml("#2C3E50"); // gris oscuro (titulo)
-                    var cGrisMed   = ClosedXML.Excel.XLColor.FromHtml("#5D6D7E"); // gris medio (header info)
-                    var cGrisClar  = ClosedXML.Excel.XLColor.FromHtml("#F7F9FC"); // gris muy claro (filas alt)
-                    var cBorde     = ClosedXML.Excel.XLColor.FromHtml("#D5DDE5"); // borde sutil
+                    var cAzul      = ClosedXML.Excel.XLColor.FromHtml("#1CA0E6");
+                    var cGrisOsc   = ClosedXML.Excel.XLColor.FromHtml("#2C3E50");
+                    var cGrisMed   = ClosedXML.Excel.XLColor.FromHtml("#5D6D7E");
+                    var cGrisClar  = ClosedXML.Excel.XLColor.FromHtml("#F7F9FC");
+                    var cBorde     = ClosedXML.Excel.XLColor.FromHtml("#D5DDE5");
                     var cBlanco    = ClosedXML.Excel.XLColor.White;
-                    var cNegro     = ClosedXML.Excel.XLColor.Black;
-                    var cTextoGris = ClosedXML.Excel.XLColor.FromHtml("#4A5568"); // texto normal
-                    // Colores de estado (pasteles suaves, fondo claro)
-                    var cBgNuevo   = ClosedXML.Excel.XLColor.FromHtml("#E8F8F0"); // verde pastel
-                    var cTxNuevo   = ClosedXML.Excel.XLColor.FromHtml("#1A7A45"); // verde texto
-                    var cBgMod     = ClosedXML.Excel.XLColor.FromHtml("#FFFDE7"); // amarillo pastel
-                    var cTxMod     = ClosedXML.Excel.XLColor.FromHtml("#7A5200"); // amarillo texto
-                    var cBgElim    = ClosedXML.Excel.XLColor.FromHtml("#FDE8E8"); // rojo pastel
-                    var cTxElim    = ClosedXML.Excel.XLColor.FromHtml("#7A1A1A"); // rojo texto
+                    var cTextoGris = ClosedXML.Excel.XLColor.FromHtml("#4A5568");
+                    var cBgNuevo   = ClosedXML.Excel.XLColor.FromHtml("#E8F8F0");
+                    var cTxNuevo   = ClosedXML.Excel.XLColor.FromHtml("#1A7A45");
+                    var cBgMod     = ClosedXML.Excel.XLColor.FromHtml("#FFFDE7");
+                    var cTxMod     = ClosedXML.Excel.XLColor.FromHtml("#7A5200");
+                    var cBgElim    = ClosedXML.Excel.XLColor.FromHtml("#FDE8E8");
+                    var cTxElim    = ClosedXML.Excel.XLColor.FromHtml("#7A1A1A");
+                    var cAzulLink  = ClosedXML.Excel.XLColor.FromHtml("#0D6EFD");
 
-                    // ── HOJA 1: REPORTE BIM ─────────────────────────────────
-                    var ws = wb.Worksheets.Add("REPORTE BIM");
+                    // ── HOJA 1: INFORME BIM ──────────────────────────────────
+                    var ws = wb.Worksheets.Add("INFORME BIM");
                     ws.ShowGridLines = false;
 
-                    // Fila 1: Título principal — gris oscuro + texto blanco + azul bold
-                    var rTit = ws.Range("A1:F1"); rTit.Merge();
-                    rTit.Value = "  INFORME DE CAMBIOS BIM  —  POSTENSA Design & Build";
+                    // Fila 1: Título — gris oscuro full-width (8 columnas)
+                    string resumen = "+" + nNuevos + " Nuevos  ~" + nMods + " Modificados  -" + nElims + " Eliminados  |  Total: " + totalCamb;
+                    var rTit = ws.Range("A1:H1"); rTit.Merge();
+                    rTit.Value = "  INFORME DE CAMBIOS BIM  —  POSTENSA Design & Build  |  " + resumen;
                     rTit.Style.Font.Bold        = true;
-                    rTit.Style.Font.FontSize    = 15;
+                    rTit.Style.Font.FontSize    = 14;
                     rTit.Style.Font.FontColor   = cBlanco;
                     rTit.Style.Fill.BackgroundColor = cGrisOsc;
                     rTit.Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Left;
                     rTit.Style.Alignment.Vertical   = ClosedXML.Excel.XLAlignmentVerticalValues.Center;
-                    ws.Row(1).Height = 32;
+                    ws.Row(1).Height = 30;
 
-                    // Fila 2: banda azul delgada
-                    var rBanda = ws.Range("A2:F2"); rBanda.Merge();
+                    // Fila 2: banda azul
+                    var rBanda = ws.Range("A2:H2"); rBanda.Merge();
                     rBanda.Style.Fill.BackgroundColor = cAzul;
                     ws.Row(2).Height = 4;
 
-                    // Filas 3-4: info del reporte (fondo gris claro)
-                    void InfoFila(int fila, string k1, string v1, string k2, string v2)
+                    // Filas 3-5: info del reporte
+                    void InfoFila(int fila, string k1, string v1, string k2, object v2, bool esLink2 = false)
                     {
                         ws.Cell(fila, 1).Value = k1;
                         ws.Cell(fila, 2).Value = v1;
-                        ws.Cell(fila, 4).Value = k2;
-                        ws.Cell(fila, 5).Value = v2;
-                        var r = ws.Range(fila, 1, fila, 7);
+                        ws.Range(fila, 2, fila, 4).Merge();
+                        ws.Cell(fila, 5).Value = k2;
+                        if (esLink2 && v2 is string urlStr && !string.IsNullOrEmpty(urlStr))
+                        {
+                            ws.Cell(fila, 6).Value = "Abrir Viewer";
+                            try { ws.Cell(fila, 6).SetHyperlink(new ClosedXML.Excel.XLHyperlink(urlStr)); } catch { ws.Cell(fila, 6).Value = urlStr; }
+                            ws.Cell(fila, 6).Style.Font.FontColor = cAzulLink;
+                            ws.Cell(fila, 6).Style.Font.Underline = ClosedXML.Excel.XLFontUnderlineValues.Single;
+                        }
+                        else
+                            ws.Cell(fila, 6).Value = v2?.ToString() ?? "";
+                        ws.Range(fila, 6, fila, 8).Merge();
+                        var r = ws.Range(fila, 1, fila, 8);
                         r.Style.Fill.BackgroundColor = cGrisClar;
                         r.Style.Font.FontSize = 9;
-                        foreach (int c in new[] { 1, 4 })
+                        foreach (int c in new[] { 1, 5 })
                         {
-                            ws.Cell(fila, c).Style.Font.Bold      = true;
-                            ws.Cell(fila, c).Style.Font.FontColor  = cGrisMed;
+                            ws.Cell(fila, c).Style.Font.Bold     = true;
+                            ws.Cell(fila, c).Style.Font.FontColor = cGrisMed;
                         }
-                        foreach (int c in new[] { 2, 5 })
-                            ws.Cell(fila, c).Style.Font.FontColor  = cTextoGris;
+                        ws.Cell(fila, 2).Style.Font.FontColor = cTextoGris;
                     }
-                    InfoFila(3, "Proyecto:", proyecto,    "Fecha:",   "'" + fecha);
-                    InfoFila(4, "Usuario:",  usuario,     "Cambios:", totalCamb + "  (+" + nNuevos + "  ~" + nMods + "  -" + nElims + ")");
-                    ws.Row(3).Height = 16; ws.Row(4).Height = 16;
+                    InfoFila(3, "Proyecto:",  proyecto, "Fecha:",   "'" + fecha);
+                    InfoFila(4, "Usuario:",   usuario,  "Viewer:",  viewerUrl, esLink2: true);
+                    InfoFila(5, "Generado por:", "Plugin BIM Estructural v2.1 — POSTENSA", "Resumen:",
+                        "+" + nNuevos + " Nuevos  ~" + nMods + " Mod.  -" + nElims + " Elim.");
+                    ws.Row(3).Height = 15; ws.Row(4).Height = 15; ws.Row(5).Height = 15;
 
-                    // Fila 5: separador vacío
-                    ws.Row(5).Height = 6;
+                    // Fila 6: separador
+                    ws.Row(6).Height = 5;
 
-                    // Fila 6: encabezados de tabla — azul Postensa
-                    var hdrs = new[] { "N°", "Estado", "Descripción del Cambio", "Categoría", "Familia y Tipo", "Nivel / Restricción", "UniqueId" };
-                    for (int c = 1; c <= 7; c++)
+                    // Fila 7: encabezados de tabla
+                    // 8 columnas: N° | Estado | Descripción del Cambio | Categoría | Familia y Tipo | Nivel | Ver en Viewer | UniqueId
+                    var hdrs = new[] { "N°", "Estado", "Descripción del Cambio", "Categoría",
+                        "Familia y Tipo", "Nivel / Restricción", "Ver en Viewer", "UniqueId" };
+                    for (int c = 1; c <= 8; c++)
                     {
-                        var cel = ws.Cell(6, c);
+                        var cel = ws.Cell(7, c);
                         cel.Value = hdrs[c - 1];
-                        cel.Style.Fill.BackgroundColor = cAzul;
+                        cel.Style.Fill.BackgroundColor = cGrisOsc;
                         cel.Style.Font.FontColor = cBlanco;
                         cel.Style.Font.Bold      = true;
                         cel.Style.Font.FontSize  = 10;
                         cel.Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Center;
                         cel.Style.Alignment.Vertical   = ClosedXML.Excel.XLAlignmentVerticalValues.Center;
                         cel.Style.Border.BottomBorder  = ClosedXML.Excel.XLBorderStyleValues.Thin;
-                        cel.Style.Border.BottomBorderColor = cBlanco;
+                        cel.Style.Border.BottomBorderColor = cAzul;
                     }
-                    ws.Row(6).Height = 20;
+                    ws.Row(7).Height = 22;
 
-                    // Filas de datos (NUEVO → MODIFICADO → ELIMINADO)
-                    int fila = 7;
+                    // Datos
+                    int fila = 8;
                     int num  = 1;
                     foreach (var orden in new[] { "NUEVO", "MODIFICADO", "ELIMINADO" })
                     {
@@ -874,12 +971,10 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                             bool par  = (fila % 2 == 0);
                             var bgRow = par ? cBlanco : cGrisClar;
 
-                            // Num
                             ws.Cell(fila, 1).Value = num++;
                             ws.Cell(fila, 1).Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Center;
                             ws.Cell(fila, 1).Style.Font.FontColor = cTextoGris;
 
-                            // Estado (celda coloreada independiente)
                             var celEst = ws.Cell(fila, 2);
                             celEst.Value = item.estado;
                             celEst.Style.Font.Bold = true;
@@ -889,14 +984,25 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                             else if (item.estado == "MODIFICADO") { celEst.Style.Fill.BackgroundColor = cBgMod;   celEst.Style.Font.FontColor = cTxMod;   }
                             else                                   { celEst.Style.Fill.BackgroundColor = cBgElim;  celEst.Style.Font.FontColor = cTxElim;  }
 
-                            // Otras celdas
                             ws.Cell(fila, 3).Value = item.desc;
                             ws.Cell(fila, 4).Value = item.cat;
                             ws.Cell(fila, 5).Value = item.famTipo;
                             ws.Cell(fila, 6).Value = item.nivel;
-                            ws.Cell(fila, 7).Value = item.uid;
 
-                            foreach (int col in new[] { 1, 3, 4, 5, 6, 7 })
+                            // Columna 7: link al viewer (si hay URL configurada)
+                            if (!string.IsNullOrEmpty(viewerUrl))
+                            {
+                                ws.Cell(fila, 7).Value = "Ver elemento";
+                                try { ws.Cell(fila, 7).SetHyperlink(new ClosedXML.Excel.XLHyperlink(viewerUrl)); } catch { ws.Cell(fila, 7).Value = viewerUrl; }
+                                ws.Cell(fila, 7).Style.Font.FontColor = cAzulLink;
+                                ws.Cell(fila, 7).Style.Font.Underline = ClosedXML.Excel.XLFontUnderlineValues.Single;
+                            }
+                            else
+                                ws.Cell(fila, 7).Value = "—";
+
+                            ws.Cell(fila, 8).Value = item.uid;
+
+                            foreach (int col in new[] { 1, 3, 4, 5, 6, 7, 8 })
                             {
                                 var cel = ws.Cell(fila, col);
                                 cel.Style.Fill.BackgroundColor = bgRow;
@@ -906,21 +1012,19 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                             }
                             celEst.Style.Border.BottomBorder = ClosedXML.Excel.XLBorderStyleValues.Hair;
                             celEst.Style.Border.BottomBorderColor = cBorde;
-
                             ws.Cell(fila, 3).Style.Alignment.WrapText = true;
-                            ws.Row(fila).Height = 28;
+                            ws.Row(fila).Height = 30;
                             fila++;
                         }
                     }
 
-                    // Separador antes del resumen
+                    // Banda azul de cierre + fila resumen
                     ws.Row(fila).Height = 4;
-                    ws.Range(fila, 1, fila, 7).Style.Fill.BackgroundColor = cAzul;
+                    ws.Range(fila, 1, fila, 8).Style.Fill.BackgroundColor = cAzul;
                     fila++;
 
-                    // Fila resumen
-                    ws.Range(fila, 1, fila, 7).Style.Fill.BackgroundColor = cGrisClar;
-                    ws.Range(fila, 1, fila, 7).Style.Font.Bold = true;
+                    ws.Range(fila, 1, fila, 8).Style.Fill.BackgroundColor = cGrisClar;
+                    ws.Range(fila, 1, fila, 8).Style.Font.Bold = true;
                     ws.Cell(fila, 1).Value = "RESUMEN →";
                     ws.Cell(fila, 1).Style.Font.FontColor = cGrisMed;
                     ws.Cell(fila, 2).Value = "+" + nNuevos + " Nuevos";
@@ -933,33 +1037,32 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                     ws.Cell(fila, 5).Style.Font.FontColor = cGrisOsc;
                     ws.Row(fila).Height = 20;
 
-                    // Anchos de columna: N°=5 Estado=14 Descripción=52 Categoría=22 FamTipo=35 Nivel=25 UniqueId=40
-                    ws.Column(1).Width = 5;
-                    ws.Column(2).Width = 15;
-                    ws.Column(3).Width = 52;
-                    ws.Column(4).Width = 22;
-                    ws.Column(5).Width = 35;
-                    ws.Column(6).Width = 25;
-                    ws.Column(7).Width = 40;
+                    // Anchos de columna optimizados
+                    ws.Column(1).Width =  5;  // N°
+                    ws.Column(2).Width = 14;  // Estado
+                    ws.Column(3).Width = 55;  // Descripción
+                    ws.Column(4).Width = 22;  // Categoría
+                    ws.Column(5).Width = 38;  // Familia y Tipo
+                    ws.Column(6).Width = 26;  // Nivel
+                    ws.Column(7).Width = 16;  // Viewer link
+                    ws.Column(8).Width = 40;  // UniqueId
 
-                    // Freeze encabezados (filas 1-6)
-                    ws.SheetView.FreezeRows(6);
+                    // Freeze filas de encabezado (1-7)
+                    ws.SheetView.FreezeRows(7);
 
-                    // Bordes externos de la tabla
-                    ws.Range(6, 1, fila, 7).Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Medium;
-                    ws.Range(6, 1, fila, 7).Style.Border.OutsideBorderColor = cAzul;
+                    // Borde exterior de la tabla
+                    ws.Range(7, 1, fila, 8).Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Medium;
+                    ws.Range(7, 1, fila, 8).Style.Border.OutsideBorderColor = cGrisOsc;
 
                     // ── HOJA 2: AUDITORIA ────────────────────────────────────
                     var ws2 = wb.Worksheets.Add("AUDITORIA");
                     ws2.ShowGridLines = false;
-
-                    // Encabezados auditoria
-                    var hdrs2 = new[] { "Estado", "UniqueId", "Categoria", "Tipo" };
-                    for (int c = 1; c <= 4; c++)
+                    var hdrs2 = new[] { "Estado", "UniqueId", "Categoria", "Familia y Tipo", "Nivel" };
+                    for (int c = 1; c <= 5; c++)
                     {
                         ws2.Cell(1, c).Value = hdrs2[c - 1];
                         ws2.Cell(1, c).Style.Font.Bold = true;
-                        ws2.Cell(1, c).Style.Fill.BackgroundColor = cAzul;
+                        ws2.Cell(1, c).Style.Fill.BackgroundColor = cGrisOsc;
                         ws2.Cell(1, c).Style.Font.FontColor = cBlanco;
                         ws2.Cell(1, c).Style.Font.FontSize = 10;
                     }
@@ -976,8 +1079,9 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                         else                                   { ws2.Cell(f2, 1).Style.Fill.BackgroundColor = cBgElim;  ws2.Cell(f2, 1).Style.Font.FontColor = cTxElim;  }
                         ws2.Cell(f2, 2).Value = item.uid;
                         ws2.Cell(f2, 3).Value = item.cat;
-                        ws2.Cell(f2, 4).Value = item.tipo;
-                        var rg = ws2.Range(f2, 2, f2, 4);
+                        ws2.Cell(f2, 4).Value = item.famTipo;
+                        ws2.Cell(f2, 5).Value = item.nivel;
+                        var rg = ws2.Range(f2, 2, f2, 5);
                         rg.Style.Fill.BackgroundColor = par2 ? cBlanco : cGrisClar;
                         rg.Style.Font.FontColor = cTextoGris;
                         rg.Style.Border.BottomBorder = ClosedXML.Excel.XLBorderStyleValues.Hair;
@@ -989,20 +1093,24 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
 
                     wb.SaveAs(rutaExcel);
                 }
-                // Abrir automáticamente
                 try { System.Diagnostics.Process.Start(rutaExcel); } catch { }
             }
             catch
             {
-                // Fallback a CSV si ClosedXML falla
+                // Fallback CSV
                 var sb = new StringBuilder();
-                sb.AppendLine("No.|Estado|Descripcion|Categoria|Tipo|UniqueId");
+                sb.AppendLine("No.|Estado|Descripcion|Categoria|FamiliaYTipo|Nivel|UniqueId");
                 int idx = 1;
                 foreach (var item in lista)
-                    sb.AppendLine(idx++ + "|" + item.estado + "|" + item.desc + "|" + item.cat + "|" + item.tipo + "|" + item.uid);
-                File.WriteAllText(Path.Combine(sesion, "REPORTE_BIM.csv"), sb.ToString(), Encoding.UTF8);
+                    sb.AppendLine(idx++ + "|" + item.estado + "|" + item.desc + "|" + item.cat + "|" + item.famTipo + "|" + item.nivel + "|" + item.uid);
+                File.WriteAllText(Path.Combine(sesion, "INFORME_BIM.csv"), sb.ToString(), Encoding.UTF8);
             }
         }
+
+
+
+
+
 
 
         void Limpiar(Document doc)
