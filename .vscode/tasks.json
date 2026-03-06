@@ -7,12 +7,17 @@
             "command": "dotnet",
             "args": [
                 "build"
-            ]
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
         },
         {
             "label": "debug",
             "type": "shell",
-            "command":"${command:workbench.action.debug.start}"
+            "command": "${command:workbench.action.debug.start}"
         }
     ]
 }

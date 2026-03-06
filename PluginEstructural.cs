@@ -146,14 +146,31 @@ namespace PluginEstructural
                 Location = new WinPoint(0, 0), Size = new WinSize(ancho, 64),
                 BackColor = WinColor.White
             };
-            var logo = new WinLabel
+            
+            System.Windows.Forms.Control logoCtrl;
+            string logoPath = @"C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\Desing\Logo postensa.png";
+            if (System.IO.File.Exists(logoPath))
             {
-                Text = "POSTENSA",
-                Location = new WinPoint(16, 8), AutoSize = false, Size = new WinSize(160, 48),
-                Font = new Font("Segoe UI", 18f, FontStyle.Bold),
-                ForeColor = Acento, BackColor = WinColor.Transparent,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
+                logoCtrl = new System.Windows.Forms.PictureBox
+                {
+                    Image = Image.FromFile(logoPath),
+                    SizeMode = System.Windows.Forms.PictureBoxSizeMode.Zoom,
+                    Location = new WinPoint(16, 8), Size = new WinSize(140, 48),
+                    BackColor = WinColor.Transparent
+                };
+            }
+            else
+            {
+                logoCtrl = new WinLabel
+                {
+                    Text = "POSTENSA",
+                    Location = new WinPoint(16, 8), AutoSize = false, Size = new WinSize(160, 48),
+                    Font = new Font("Segoe UI", 18f, FontStyle.Bold),
+                    ForeColor = Acento, BackColor = WinColor.Transparent,
+                    TextAlign = ContentAlignment.MiddleLeft
+                };
+            }
+            
             var sub = new WinLabel
             {
                 Text = "Design & Build — Plugin BIM Estructural",
@@ -169,7 +186,7 @@ namespace PluginEstructural
             };
             header.Paint += (s, e) =>
                 e.Graphics.FillRectangle(new SolidBrush(Acento), 0, 61, ancho, 3);
-            header.Controls.AddRange(new System.Windows.Forms.Control[] { logo, sub, ver });
+            header.Controls.AddRange(new System.Windows.Forms.Control[] { logoCtrl, sub, ver });
             return header;
         }
     }
@@ -691,9 +708,12 @@ namespace PluginEstructural
         Result GuardarOLD(Document doc, string reg)
         {
             string stamp = DateTime.Now.ToString("yyyy-MM-dd"); // un registro por dia, se sobreescribe
-
             string path  = Path.Combine(reg, stamp, "OLD");
-            Utils.ExportarIFC(doc, path, Utils.Safe(doc.Title) + "_OLD");
+
+            // Crear carpeta
+            Directory.CreateDirectory(path);
+
+            // Guardar hashes CSV (esencial para la comparacion, no requiere transaccion)
             var sb = new StringBuilder();
             sb.AppendLine("UniqueId|Categoria|Tipo|Hash|Params");
             foreach (Element e in new FilteredElementCollector(doc, doc.ActiveView.Id).WhereElementIsNotElementType())
@@ -706,7 +726,7 @@ namespace PluginEstructural
             }
             File.WriteAllText(Path.Combine(path, "hashes.csv"), sb.ToString(), Encoding.UTF8);
             Log(Path.Combine(reg, stamp), "OLD guardado", doc, 0, 0, 0);
-            TaskDlg.Show("OLD Guardado", "Guardado en:\n" + path);
+            TaskDlg.Show("OLD Guardado", "Snapshot guardado en:\n" + path);
             return Result.Succeeded;
         }
 
@@ -735,24 +755,24 @@ namespace PluginEstructural
                 HashElem.Calcular(kv.Value) != ant[kv.Key].hash).Select(kv => kv.Value).ToList();
             var elims  = ant.Keys.Where(uid => !act.ContainsKey(uid)).ToList();
 
-            // Crear vista COMPARACION_BIM
+            // ── PASO 1: Si existe COMPARACION_BIM, cambiar la vista activa ANTES de abrir
+            //   cualquier transaccion (uidoc.ActiveView no puede cambiarse dentro de Transaction)
+            RevView viewOrigen = doc.ActiveView;
+            var existenteVieja = new FilteredElementCollector(doc).OfClass(typeof(View3D))
+                .Cast<View3D>().FirstOrDefault(v => v.Name == "COMPARACION_BIM");
+            if (existenteVieja != null)
+            {
+                var otra = new FilteredElementCollector(doc).OfClass(typeof(View3D))
+                    .Cast<View3D>().FirstOrDefault(v => v.Id != existenteVieja.Id && !v.IsTemplate);
+                if (otra != null) uidoc.ActiveView = otra;
+            }
+
+            // ── PASO 2: Crear/duplicar la vista COMPARACION_BIM dentro de transaccion
             View3D vistaComp = null;
             using (var t = new Transaction(doc, "Crear Vista Comparacion"))
             {
                 t.Start();
-                
-                // Guardamos la vista activa original antes de procesar
-                RevView viewOrigen = doc.ActiveView;
-                
-                var existente = new FilteredElementCollector(doc).OfClass(typeof(View3D))
-                    .Cast<View3D>().FirstOrDefault(v => v.Name == "COMPARACION_BIM");
-                if (existente != null)
-                {
-                    var otra = new FilteredElementCollector(doc).OfClass(typeof(View3D))
-                        .Cast<View3D>().FirstOrDefault(v => v.Id != existente.Id && !v.IsTemplate);
-                    if (otra != null) uidoc.ActiveView = otra;
-                    doc.Delete(existente.Id);
-                }
+                if (existenteVieja != null) doc.Delete(existenteVieja.Id);
 
                 if (viewOrigen is View3D act3D && viewOrigen.Name != "COMPARACION_BIM")
                 {
@@ -764,14 +784,13 @@ namespace PluginEstructural
                         .Cast<ViewFamilyType>().FirstOrDefault(x => x.ViewFamily == ViewFamily.ThreeDimensional);
                     vistaComp = View3D.CreateIsometric(doc, vft.Id);
                 }
-
                 vistaComp.Name = "COMPARACION_BIM";
-                // Remover template para asegurar que los colores de comparación se vean
                 vistaComp.ViewTemplateId = ElementId.InvalidElementId;
                 vistaComp.DisplayStyle = DisplayStyle.ShadingWithEdges;
                 t.Commit();
             }
 
+            // ── PASO 3: Colorear cambios (dentro de transaccion)
             var patron = new FilteredElementCollector(doc).OfClass(typeof(FillPatternElement))
                 .Cast<FillPatternElement>().FirstOrDefault(fp => fp.GetFillPattern().IsSolidFill);
 
@@ -781,28 +800,26 @@ namespace PluginEstructural
                 foreach (var e in act.Values)
                     try { vistaComp.SetElementOverrides(e.Id, new OverrideGraphicSettings()); } catch { }
                 Colorear(vistaComp, nuevos, Utils.Verde,    patron);
-Colorear(vistaComp, mods,   Utils.Amarillo, patron);
+                Colorear(vistaComp, mods,   Utils.Amarillo, patron);
 
-// Transparentar elementos sin cambios
-var idsConCambio = nuevos.Select(e => e.Id)
-    .Concat(mods.Select(e => e.Id)).ToHashSet();
-var oTrans = new OverrideGraphicSettings();
-oTrans.SetSurfaceTransparency(75);
-oTrans.SetProjectionLineColor(new RevColor(80, 100, 120));
-foreach (var e in act.Values)
-    if (!idsConCambio.Contains(e.Id))
-        try { vistaComp.SetElementOverrides(e.Id, oTrans); } catch { }
-
-Utils.OcultarCategoriasRuido(doc, vistaComp);
+                var idsConCambio = nuevos.Select(e => e.Id)
+                    .Concat(mods.Select(e => e.Id)).ToHashSet();
+                var oTrans = new OverrideGraphicSettings();
+                oTrans.SetSurfaceTransparency(5);
+                oTrans.SetProjectionLineColor(new RevColor(80, 100, 120));
+                foreach (var e in act.Values)
+                    if (!idsConCambio.Contains(e.Id))
+                        try { vistaComp.SetElementOverrides(e.Id, oTrans); } catch { }
+                Utils.OcultarCategoriasRuido(doc, vistaComp);
                 t.Commit();
             }
 
-            // IFC export ANTES de cambiar la vista activa (evita conflicto de transaccion)
+            // ── PASO 4: Export IFC del NEW (fuera de transaccion, sin cambiar vista activa)
             string stamp  = Path.GetFileName(Path.GetDirectoryName(oldDir));
             string sesion = Path.Combine(reg, stamp);
-            Utils.ExportarIFC(doc, Path.Combine(sesion, "NEW"), Utils.Safe(doc.Title) + "_NEW");
+            try { Utils.ExportarIFC(doc, Path.Combine(sesion, "NEW"), Utils.Safe(doc.Title) + "_NEW"); } catch { }
 
-            // Cambiar vista activa DESPUES del export IFC
+            // ── PASO 5: Activar la vista COMPARACION_BIM (operacion UI, nunca dentro de Transaction)
             uidoc.ActiveView = vistaComp;
 
             // Reporte con Gemini
@@ -852,7 +869,7 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
             o.SetProjectionLineColor(col); o.SetSurfaceForegroundPatternColor(col);
             o.SetSurfaceForegroundPatternVisible(true);
             if (pat != null) o.SetSurfaceForegroundPatternId(pat.Id);
-            o.SetSurfaceTransparency(60);
+            o.SetSurfaceTransparency(5);
             foreach (var e in elems) try { v.SetElementOverrides(e.Id, o); } catch { }
         }
 
@@ -893,24 +910,61 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                     var ws = wb.Worksheets.Add("INFORME BIM");
                     ws.ShowGridLines = false;
 
-                    // Fila 1: Título — gris oscuro full-width (8 columnas)
-                    string resumen = "+" + nNuevos + " Nuevos  ~" + nMods + " Modificados  -" + nElims + " Eliminados  |  Total: " + totalCamb;
-                    var rTit = ws.Range("A1:H1"); rTit.Merge();
-                    rTit.Value = "  INFORME DE CAMBIOS BIM  —  POSTENSA Design & Build  |  " + resumen;
+                    // Fila 1-3: Logo, Sistema, Version, Pagina
+                    var rLogo = ws.Range("A1:C3"); rLogo.Merge();
+                    rLogo.Style.Fill.BackgroundColor = cBlanco;
+                    string logoPath = @"C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\Desing\Logo postensa.png";
+                    if (System.IO.File.Exists(logoPath))
+                    {
+                        var pic = ws.AddPicture(logoPath).MoveTo(ws.Cell(1, 1), 15, 10);
+                        pic.Width = 160; pic.Height = 45;
+                    }
+
+                    ws.Range("D1:F3").Style.Fill.BackgroundColor = cBlanco;
+                    ws.Range("D1:F1").Merge(); ws.Range("D2:F2").Merge(); ws.Range("D3:F3").Merge();
+                    
+                    ws.Cell("G1").Value = "Sistema:";    ws.Cell("H1").Value = "SGI";
+                    ws.Cell("G2").Value = "Versión:";    ws.Cell("H2").Value = "02";
+                    ws.Cell("G3").Value = "Página:";     ws.Cell("H3").Value = "01";
+
+                    var rSys = ws.Range("G1:H3");
+                    rSys.Style.Font.Bold = true;
+                    rSys.Style.Font.FontSize = 10;
+                    rSys.Style.Font.FontColor = ClosedXML.Excel.XLColor.Black;
+                    rSys.Style.Fill.BackgroundColor = cBlanco;
+                    rSys.Style.Border.InsideBorder = ClosedXML.Excel.XLBorderStyleValues.Thin;
+                    rSys.Style.Border.InsideBorderColor = ClosedXML.Excel.XLColor.Black;
+                    rSys.Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Thin;
+                    rSys.Style.Border.OutsideBorderColor = ClosedXML.Excel.XLColor.Black;
+                    
+                    for (int r = 1; r <= 3; r++) { ws.Cell(r, 7).Style.Fill.BackgroundColor = cGrisClar; ws.Cell(r, 8).Style.Fill.BackgroundColor = cBlanco; }
+                    ws.Cell("H1").Style.Font.Bold = false; ws.Cell("H2").Style.Font.Bold = false; ws.Cell("H3").Style.Font.Bold = false;
+
+                    rLogo.Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Thin;
+                    rLogo.Style.Border.OutsideBorderColor = ClosedXML.Excel.XLColor.Black;
+                    ws.Range("D1:F3").Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Thin;
+                    ws.Range("D1:F3").Style.Border.OutsideBorderColor = ClosedXML.Excel.XLColor.Black;
+
+                    // Fila 4: Titulo INFORME DE INCIDENCIAS
+                    var rTit = ws.Range("A4:H4"); rTit.Merge();
+                    rTit.Value = "INFORME DE INCIDENCIAS";
                     rTit.Style.Font.Bold        = true;
-                    rTit.Style.Font.FontSize    = 14;
-                    rTit.Style.Font.FontColor   = cBlanco;
-                    rTit.Style.Fill.BackgroundColor = cGrisOsc;
-                    rTit.Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Left;
+                    rTit.Style.Font.FontSize    = 16;
+                    rTit.Style.Font.FontColor   = ClosedXML.Excel.XLColor.FromHtml("#002060");
+                    rTit.Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Center;
                     rTit.Style.Alignment.Vertical   = ClosedXML.Excel.XLAlignmentVerticalValues.Center;
-                    ws.Row(1).Height = 30;
+                    rTit.Style.Fill.BackgroundColor = cBlanco;
+                    rTit.Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Thin;
+                    rTit.Style.Border.OutsideBorderColor = ClosedXML.Excel.XLColor.Black;
+                    
+                    ws.Row(1).Height = 20; ws.Row(2).Height = 20; ws.Row(3).Height = 20; ws.Row(4).Height = 25;
 
-                    // Fila 2: banda azul
-                    var rBanda = ws.Range("A2:H2"); rBanda.Merge();
+                    // Fila 5: banda azul
+                    var rBanda = ws.Range("A5:H5"); rBanda.Merge();
                     rBanda.Style.Fill.BackgroundColor = cAzul;
-                    ws.Row(2).Height = 4;
+                    ws.Row(5).Height = 4;
 
-                    // Filas 3-5: info del reporte
+                    // Filas 6-8: info del reporte
                     void InfoFila(int fila, string k1, string v1, string k2, object v2, bool esLink2 = false)
                     {
                         ws.Cell(fila, 1).Value = k1;
@@ -937,22 +991,22 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                         }
                         ws.Cell(fila, 2).Style.Font.FontColor = cTextoGris;
                     }
-                    InfoFila(3, "Proyecto:",  proyecto, "Fecha:",   "'" + fecha);
-                    InfoFila(4, "Usuario:",   usuario,  "Viewer:",  viewerUrl, esLink2: true);
-                    InfoFila(5, "Generado por:", "Plugin BIM Estructural v2.1 — POSTENSA", "Resumen:",
+                    InfoFila(6, "Proyecto:",  proyecto, "Fecha:",   "'" + fecha);
+                    InfoFila(7, "Usuario:",   usuario,  "Viewer:",  viewerUrl, esLink2: true);
+                    InfoFila(8, "Generado por:", "Plugin BIM Estructural v2.1 — POSTENSA", "Resumen:",
                         "+" + nNuevos + " Nuevos  ~" + nMods + " Mod.  -" + nElims + " Elim.");
-                    ws.Row(3).Height = 15; ws.Row(4).Height = 15; ws.Row(5).Height = 15;
+                    ws.Row(6).Height = 15; ws.Row(7).Height = 15; ws.Row(8).Height = 15;
 
-                    // Fila 6: separador
-                    ws.Row(6).Height = 5;
+                    // Fila 9: separador
+                    ws.Row(9).Height = 5;
 
-                    // Fila 7: encabezados de tabla
+                    // Fila 10: encabezados de tabla
                     // 8 columnas: N° | Estado | Descripción del Cambio | Categoría | Familia y Tipo | Nivel | Ver en Viewer | UniqueId
                     var hdrs = new[] { "N°", "Estado", "Descripción del Cambio", "Categoría",
                         "Familia y Tipo", "Nivel / Restricción", "Ver en Viewer", "UniqueId" };
                     for (int c = 1; c <= 8; c++)
                     {
-                        var cel = ws.Cell(7, c);
+                        var cel = ws.Cell(10, c);
                         cel.Value = hdrs[c - 1];
                         cel.Style.Fill.BackgroundColor = cGrisOsc;
                         cel.Style.Font.FontColor = cBlanco;
@@ -963,10 +1017,10 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                         cel.Style.Border.BottomBorder  = ClosedXML.Excel.XLBorderStyleValues.Thin;
                         cel.Style.Border.BottomBorderColor = cAzul;
                     }
-                    ws.Row(7).Height = 22;
+                    ws.Row(10).Height = 22;
 
                     // Datos
-                    int fila = 8;
+                    int fila = 11;
                     int num  = 1;
                     foreach (var orden in new[] { "NUEVO", "MODIFICADO", "ELIMINADO" })
                     {
@@ -1046,12 +1100,12 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                     ws.Column(7).Width = 16;  // Viewer link
                     ws.Column(8).Width = 40;  // UniqueId
 
-                    // Freeze filas de encabezado (1-7)
-                    ws.SheetView.FreezeRows(7);
+                    // Freeze filas de encabezado (1-10)
+                    ws.SheetView.FreezeRows(10);
 
                     // Borde exterior de la tabla
-                    ws.Range(7, 1, fila, 8).Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Medium;
-                    ws.Range(7, 1, fila, 8).Style.Border.OutsideBorderColor = cGrisOsc;
+                    ws.Range(10, 1, fila, 8).Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Medium;
+                    ws.Range(10, 1, fila, 8).Style.Border.OutsideBorderColor = cGrisOsc;
 
                     // ── HOJA 2: AUDITORIA ────────────────────────────────────
                     var ws2 = wb.Worksheets.Add("AUDITORIA");

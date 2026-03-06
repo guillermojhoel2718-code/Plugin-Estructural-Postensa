@@ -13,3 +13,5 @@ C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Sour
 C:\ProgramData\Autodesk\Revit\Addins\2025\PluginEstructural.deps.json
 C:\ProgramData\Autodesk\Revit\Addins\2025\PluginEstructural.dll
 C:\ProgramData\Autodesk\Revit\Addins\2025\PluginEstructural.pdb
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\PluginEstructural.sourcelink.json
+C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\obj\Debug\PluginEs.C698F95D.Up2Date
