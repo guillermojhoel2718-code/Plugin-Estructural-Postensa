@@ -244,8 +244,9 @@ namespace PluginEstructural
             Directory.CreateDirectory(carpeta);
             var opts = new IFCExportOptions
                 { FileVersion = IFCVersion.IFC2x3CV2, ExportBaseQuantities = true };
-            using (var t = new Transaction(doc, "Exportar IFC"))
-            { t.Start(); doc.Export(carpeta, nombre, opts); t.Commit(); }
+            // NOTA: doc.Export para IFC gestiona su propia transaccion internamente;
+            // NO envolver con Transaction externa (causaria conflicto con ActiveView).
+            doc.Export(carpeta, nombre, opts);
         }
 
         internal static void OcultarCategoriasRuido(Document doc, View3D vista)
@@ -795,11 +796,13 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                 t.Commit();
             }
 
-            uidoc.ActiveView = vistaComp;
-
+            // IFC export ANTES de cambiar la vista activa (evita conflicto de transaccion)
             string stamp  = Path.GetFileName(Path.GetDirectoryName(oldDir));
             string sesion = Path.Combine(reg, stamp);
             Utils.ExportarIFC(doc, Path.Combine(sesion, "NEW"), Utils.Safe(doc.Title) + "_NEW");
+
+            // Cambiar vista activa DESPUES del export IFC
+            uidoc.ActiveView = vistaComp;
 
             // Reporte con Gemini
             var lista = new List<(string estado, string desc, string cat, string tipo, string uid, string famTipo, string nivel)>();
@@ -989,16 +992,11 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                             ws.Cell(fila, 5).Value = item.famTipo;
                             ws.Cell(fila, 6).Value = item.nivel;
 
-                            // Columna 7: link al viewer (si hay URL configurada)
-                            if (!string.IsNullOrEmpty(viewerUrl))
-                            {
-                                ws.Cell(fila, 7).Value = "Ver elemento";
-                                try { ws.Cell(fila, 7).SetHyperlink(new ClosedXML.Excel.XLHyperlink(viewerUrl)); } catch { ws.Cell(fila, 7).Value = viewerUrl; }
-                                ws.Cell(fila, 7).Style.Font.FontColor = cAzulLink;
-                                ws.Cell(fila, 7).Style.Font.Underline = ClosedXML.Excel.XLFontUnderlineValues.Single;
-                            }
-                            else
-                                ws.Cell(fila, 7).Value = "—";
+                            // Columna 7: link de Viewer — vacia para que el usuario la llene manualmente
+                            ws.Cell(fila, 7).Value = "";
+                            ws.Cell(fila, 7).Style.Fill.BackgroundColor = cGrisClar;
+                            ws.Cell(fila, 7).Style.Border.BottomBorder = ClosedXML.Excel.XLBorderStyleValues.Hair;
+                            ws.Cell(fila, 7).Style.Border.BottomBorderColor = cBorde;
 
                             ws.Cell(fila, 8).Value = item.uid;
 
@@ -1150,6 +1148,9 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
         RadioButton rbSel, rbTodo, rbNiv;
         CheckedListBox clb;
 
+        // Persistir ultima ruta de exportacion durante la sesion de Revit
+        static string _ultimaRuta = null;
+
         public VentanaSAT(Document doc)
         {
             Text = "Exportar SAT"; Size = new WinSize(468, 580);
@@ -1162,12 +1163,14 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
             Controls.Add(Esti.Sep(132));
             
             Controls.Add(Esti.Lbl("Carpeta de exportacion:", 16, 142));
+            string rutaDefault = _ultimaRuta ?? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Exportacion_SAT");
             var txtRuta = new System.Windows.Forms.TextBox { Location = new WinPoint(16, 164), Size = new WinSize(390, 24), Font = Esti.FNormal, ReadOnly = true };
-            txtRuta.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Exportacion_SAT");
+            txtRuta.Text = rutaDefault;
             var btnRuta = new WinButton { Text = "...", Location = new WinPoint(412, 163), Size = new WinSize(36, 25), Font = Esti.FBold, BackColor = Esti.ColGris, ForeColor = WinColor.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
             btnRuta.FlatAppearance.BorderSize = 0;
             btnRuta.Click += (s, e) => {
-                using (var fbd = new FolderBrowserDialog { Description = "Carpeta de Exportacion SAT" }) {
+                using (var fbd = new FolderBrowserDialog { Description = "Carpeta de Exportacion SAT", SelectedPath = txtRuta.Text }) {
                     if (fbd.ShowDialog() == DialogResult.OK) txtRuta.Text = fbd.SelectedPath;
                 }
             };
@@ -1198,6 +1201,7 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                 UsarSeleccion = rbSel.Checked;
                 if (rbNiv.Checked) Niveles = clb.CheckedItems.Cast<string>().ToList();
                 RutaExportacion = txtRuta.Text;
+                _ultimaRuta = txtRuta.Text;   // guardar para la proxima vez
                 DialogResult = DialogResult.OK; Close();
             };
             bCan.DialogResult = DialogResult.Cancel;
@@ -1220,8 +1224,13 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
         public AccionComp Op { get; private set; }
         public string RutaElegida { get; private set; }
 
+        // Ultima ruta usada en la sesion de Revit
+        static string _ultimaRuta = null;
+
         public VentanaComparar(string regActual, Func<string, string> funcBuscarOLD)
         {
+            // Si hay una ruta persistida, usarla como punto de partida
+            string ruta = _ultimaRuta ?? regActual;
             Text = "Comparar Versiones"; Size = new WinSize(468, 540);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
@@ -1233,8 +1242,8 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
 
             Controls.Add(Esti.Lbl("Carpeta de registro de modelos:", 16, 142));
             var txtRuta = new System.Windows.Forms.TextBox { Location = new WinPoint(16, 164), Size = new WinSize(390, 24), Font = Esti.FNormal, ReadOnly = true };
-            txtRuta.Text = regActual;
-            RutaElegida = regActual;
+            txtRuta.Text = ruta;
+            RutaElegida = ruta;
             var btnRuta = new WinButton { Text = "...", Location = new WinPoint(412, 163), Size = new WinSize(36, 25), Font = Esti.FBold, BackColor = Esti.ColGris, ForeColor = WinColor.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
             btnRuta.FlatAppearance.BorderSize = 0;
             Controls.AddRange(new System.Windows.Forms.Control[] { txtRuta, btnRuta });
@@ -1270,14 +1279,15 @@ Utils.OcultarCategoriasRuido(doc, vistaComp);
                     if (fbd.ShowDialog() == DialogResult.OK) {
                         txtRuta.Text = fbd.SelectedPath;
                         RutaElegida = fbd.SelectedPath;
+                        _ultimaRuta = fbd.SelectedPath;   // persistir para la proxima vez
                         actualizarEstado();
                     }
                 }
             };
 
-            bG.Click += (s, e) => { Op = AccionComp.GuardarOLD;       DialogResult = DialogResult.OK; Close(); };
-            bC.Click += (s, e) => { Op = AccionComp.CompararYGenerar; DialogResult = DialogResult.OK; Close(); };
-            bL.Click += (s, e) => { Op = AccionComp.Limpiar;          DialogResult = DialogResult.OK; Close(); };
+            bG.Click += (s, e) => { _ultimaRuta = RutaElegida; Op = AccionComp.GuardarOLD;       DialogResult = DialogResult.OK; Close(); };
+            bC.Click += (s, e) => { _ultimaRuta = RutaElegida; Op = AccionComp.CompararYGenerar; DialogResult = DialogResult.OK; Close(); };
+            bL.Click += (s, e) => { _ultimaRuta = RutaElegida; Op = AccionComp.Limpiar;          DialogResult = DialogResult.OK; Close(); };
             Controls.Add(Esti.Sep(460));
             var bCan = Esti.Btn("Cancelar", Esti.ColGris, 384, 468, 70, 28);
             bCan.DialogResult = DialogResult.Cancel;
