@@ -328,7 +328,7 @@ namespace PluginEstructural
         {
             var dic = new Dictionary<string, string>();
             var nombres = new[] { "b", "h", "Ancho", "Alto", "Espesor", "Longitud",
-                "Desfase base", "Desfase superior", "Tipo" };
+                "Desfase base", "Desfase superior", "Tipo", "Marca de ubicación", "Marca" };
             foreach (var n in nombres)
             {
                 var p = e.LookupParameter(n);
@@ -337,6 +337,12 @@ namespace PluginEstructural
             }
             var bb = e.get_BoundingBox(null);
             if (bb != null) dic["Pos Z"] = bb.Min.Z.ToString("F2") + "m";
+
+            var pCol = e.get_Parameter(BuiltInParameter.COLUMN_LOCATION_MARK);
+            if (pCol != null && pCol.HasValue) dic["Marca de Ubicacion"] = pCol.AsValueString() ?? pCol.AsString();
+            else if (dic.ContainsKey("Marca de ubicación") && !string.IsNullOrEmpty(dic["Marca de ubicación"])) dic["Marca de Ubicacion"] = dic["Marca de ubicación"];
+            else if (dic.ContainsKey("Marca") && !string.IsNullOrEmpty(dic["Marca"])) dic["Marca de Ubicacion"] = dic["Marca"];
+            else dic["Marca de Ubicacion"] = "-";
 
             var paramFto = e.get_Parameter(BuiltInParameter.ELEM_FAMILY_AND_TYPE_PARAM);
             dic["Familia y Tipo"] = paramFto != null && paramFto.AsValueString() != null
@@ -823,14 +829,15 @@ namespace PluginEstructural
             uidoc.ActiveView = vistaComp;
 
             // Reporte con Gemini
-            var lista = new List<(string estado, string desc, string cat, string tipo, string uid, string famTipo, string nivel)>();
+            var lista = new List<(string estado, string desc, string cat, string tipo, string uid, string famTipo, string nivel, string marca)>();
             foreach (var e in nuevos)
             {
                 var pd = HashElem.ParamsLegibles(e);
                 string ft = pd.ContainsKey("Familia y Tipo") ? pd["Familia y Tipo"] : "";
                 string nv = pd.ContainsKey("Nivel / Restriccion") ? pd["Nivel / Restriccion"] : "";
+                string mc = pd.ContainsKey("Marca de Ubicacion") ? pd["Marca de Ubicacion"] : "-";
                 lista.Add(("NUEVO", Gemini.NuevoDesc(e.Category?.Name ?? "", ft),
-                    e.Category?.Name ?? "", e.Name, e.UniqueId, ft, nv));
+                    e.Category?.Name ?? "", e.Name, e.UniqueId, ft, nv, mc));
             }
             foreach (var e in mods)
             {
@@ -838,17 +845,19 @@ namespace PluginEstructural
                 var pd = HashElem.ParamsLegibles(e);
                 string ft = pd.ContainsKey("Familia y Tipo") ? pd["Familia y Tipo"] : "";
                 string nv = pd.ContainsKey("Nivel / Restriccion") ? pd["Nivel / Restriccion"] : "";
+                string mc = pd.ContainsKey("Marca de Ubicacion") ? pd["Marca de Ubicacion"] : "-";
                 lista.Add(("MODIFICADO",
                     Gemini.Describir(e.Category?.Name ?? "", e.Name, pa, pd, nv, ft),
-                    e.Category?.Name ?? "", e.Name, e.UniqueId, ft, nv));
+                    e.Category?.Name ?? "", e.Name, e.UniqueId, ft, nv, mc));
             }
             foreach (var uid in elims)
             {
                 var pa = ant[uid].pars;
                 string ft = pa.ContainsKey("Familia y Tipo") ? pa["Familia y Tipo"] : ant[uid].cat + " - " + ant[uid].tipo;
                 string nv = pa.ContainsKey("Nivel / Restriccion") ? pa["Nivel / Restriccion"] : "Sin nivel";
+                string mc = pa.ContainsKey("Marca de Ubicacion") ? pa["Marca de Ubicacion"] : "-";
                 lista.Add(("ELIMINADO", Gemini.ElimDesc(ant[uid].cat, ft),
-                    ant[uid].cat, ant[uid].tipo, uid, ft, nv));
+                    ant[uid].cat, ant[uid].tipo, uid, ft, nv, mc));
             }
 
             GenerarReporte(sesion, doc.Title, lista);
@@ -874,7 +883,7 @@ namespace PluginEstructural
         }
 
         void GenerarReporte(string sesion, string proyecto,
-            List<(string estado, string desc, string cat, string tipo, string uid, string famTipo, string nivel)> lista)
+            List<(string estado, string desc, string cat, string tipo, string uid, string famTipo, string nivel, string marca)> lista)
         {
             string nomArchivo = "INFORME_BIM_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".xlsx";
             string rutaExcel  = Path.Combine(sesion, nomArchivo);
@@ -916,12 +925,20 @@ namespace PluginEstructural
                     string logoPath = @"C:\ProgramData\Autodesk\Revit\Macros\2025\Revit\AppHookup\PluginEstructural\Source\PluginEstructural\Desing\Logo postensa.png";
                     if (System.IO.File.Exists(logoPath))
                     {
-                        var pic = ws.AddPicture(logoPath).MoveTo(ws.Cell(1, 1), 15, 10);
+                        var pic = ws.AddPicture(logoPath).MoveTo(ws.Cell(1, 1), 180, 15);
                         pic.Width = 160; pic.Height = 45;
                     }
 
-                    ws.Range("D1:F3").Style.Fill.BackgroundColor = cBlanco;
-                    ws.Range("D1:F1").Merge(); ws.Range("D2:F2").Merge(); ws.Range("D3:F3").Merge();
+                    var rCod = ws.Range("D1:F3");
+                    rCod.Merge();
+                    rCod.Value = "CÓDIGO\r\nR3PI6";
+                    rCod.Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Center;
+                    rCod.Style.Alignment.Vertical = ClosedXML.Excel.XLAlignmentVerticalValues.Center;
+                    rCod.Style.Alignment.WrapText = true;
+                    rCod.Style.Font.Bold = true;
+                    rCod.Style.Font.FontSize = 12;
+                    rCod.Style.Font.FontColor = ClosedXML.Excel.XLColor.Black;
+                    rCod.Style.Fill.BackgroundColor = cBlanco;
                     
                     ws.Cell("G1").Value = "Sistema:";    ws.Cell("H1").Value = "SGI";
                     ws.Cell("G2").Value = "Versión:";    ws.Cell("H2").Value = "02";
@@ -1001,9 +1018,9 @@ namespace PluginEstructural
                     ws.Row(9).Height = 5;
 
                     // Fila 10: encabezados de tabla
-                    // 8 columnas: N° | Estado | Descripción del Cambio | Categoría | Familia y Tipo | Nivel | Ver en Viewer | UniqueId
+                    // 8 columnas: N° | Estado | Descripción del Cambio | Categoría | Familia y Tipo | Nivel | Marca de ubicación | UniqueId
                     var hdrs = new[] { "N°", "Estado", "Descripción del Cambio", "Categoría",
-                        "Familia y Tipo", "Nivel / Restricción", "Ver en Viewer", "UniqueId" };
+                        "Familia y Tipo", "Nivel / Restricción", "Marca de ubicación", "UniqueId" };
                     for (int c = 1; c <= 8; c++)
                     {
                         var cel = ws.Cell(10, c);
@@ -1047,11 +1064,9 @@ namespace PluginEstructural
                             ws.Cell(fila, 5).Value = item.famTipo;
                             ws.Cell(fila, 6).Value = item.nivel;
 
-                            // Columna 7: link de Viewer — vacia para que el usuario la llene manualmente
-                            ws.Cell(fila, 7).Value = "";
-                            ws.Cell(fila, 7).Style.Fill.BackgroundColor = cGrisClar;
-                            ws.Cell(fila, 7).Style.Border.BottomBorder = ClosedXML.Excel.XLBorderStyleValues.Hair;
-                            ws.Cell(fila, 7).Style.Border.BottomBorderColor = cBorde;
+                            // Columna 7: Marca de ubicación
+                            ws.Cell(fila, 7).Value = item.marca;
+                            ws.Cell(fila, 7).Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Center;
 
                             ws.Cell(fila, 8).Value = item.uid;
 
