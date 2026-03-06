@@ -3,69 +3,180 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
 using System.Windows.Forms;
-
-using RevitView  = Autodesk.Revit.DB.View;
-using RevitPoint = Autodesk.Revit.DB.XYZ;
-using WinPoint   = System.Drawing.Point;
-using WinSize    = System.Drawing.Size;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 
+using WinColor  = System.Drawing.Color;
+using WinPoint  = System.Drawing.Point;
+using WinSize   = System.Drawing.Size;
 using WinLabel  = System.Windows.Forms.Label;
 using WinPanel  = System.Windows.Forms.Panel;
-using WinColor  = System.Drawing.Color;
+using WinButton = System.Windows.Forms.Button;
 using RevColor  = Autodesk.Revit.DB.Color;
-
+using RevView   = Autodesk.Revit.DB.View;
 using TaskDlg   = Autodesk.Revit.UI.TaskDialog;
 
 namespace PluginEstructural
 {
-    // ═══════════════════════════════════════════════════════
-    //  RIBBON
-    // ═══════════════════════════════════════════════════════
-    // Métodos requeridos por ThisApplication.Designer.cs de Revit Macros
     public partial class ThisApplication
     {
         private void Module_Startup(object sender, EventArgs e) { }
         private void Module_Shutdown(object sender, EventArgs e) { }
     }
 
-    public class AppInicio : IExternalApplication
+    // ════════════════════════════════════════════════════════
+    //  CONFIG
+    // ════════════════════════════════════════════════════════
+    internal static class Config
     {
-        public Result OnStartup(UIControlledApplication app)
+        static Dictionary<string, string> _v;
+        internal static string Get(string key)
         {
-            try
+            if (_v == null)
             {
-                const string TAB = "BIM Estructural";
-                try { app.CreateRibbonTab(TAB); } catch { }
-                RibbonPanel panel = app.CreateRibbonPanel(TAB, "Herramientas BIM");
-                string dll = typeof(AppInicio).Assembly.Location;
-
-                panel.AddItem(new PushButtonData("ExportarSAT",      "Exportar\nSAT",
-                    dll, "PluginEstructural.CmdExportarSAT")
-                    { ToolTip = "Genera sólido único -90° para SolidWorks (.SAT)" });
-                panel.AddSeparator();
-                panel.AddItem(new PushButtonData("CompararVersiones", "Comparar\nVersiones",
-                    dll, "PluginEstructural.CmdCompararVersiones")
-                    { ToolTip = "Exporta IFC OLD/NEW y colorea diferencias — registro de auditoría" });
-                panel.AddSeparator();
-                panel.AddItem(new PushButtonData("GenerarViewer",     "Generar\nViewer",
-                    dll, "PluginEstructural.CmdGenerarViewer")
-                    { ToolTip = "Exporta IFC con colores y genera viewer HTML para obra" });
-
-                return Result.Succeeded;
+                _v = new Dictionary<string, string>();
+                string[] rutas = {
+                    @"C:\ProgramData\Autodesk\Revit\Addins\2025\config.env",
+                    Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.env"),
+                    Path.Combine(Environment.GetFolderPath(
+                        Environment.SpecialFolder.MyDocuments), "PluginEstructural", "config.env")
+                };
+                foreach (var r in rutas)
+                {
+                    if (!File.Exists(r)) continue;
+                    foreach (var l in File.ReadAllLines(r))
+                    {
+                        if (l.StartsWith("#") || !l.Contains("=")) continue;
+                        var p = l.Split(new[] { '=' }, 2);
+                        if (p.Length == 2) _v[p[0].Trim()] = p[1].Trim();
+                    }
+                    break;
+                }
             }
-            catch (Exception ex) { TaskDlg.Show("Error plugin", ex.Message); return Result.Failed; }
+            return _v.ContainsKey(key) ? _v[key] : null;
         }
-        public Result OnShutdown(UIControlledApplication app) => Result.Succeeded;
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  UTILIDADES COMPARTIDAS
-    // ═══════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════
+    //  ESTILOS UI
+    // ════════════════════════════════════════════════════════
+    internal static class Esti
+    {
+        internal static WinColor FondoOscuro     => WinColor.FromArgb(240, 242, 245);
+        internal static WinColor FondoMedio      => WinColor.FromArgb(225, 230, 235);
+        internal static WinColor FondoPanel      => WinColor.FromArgb(255, 255, 255);
+        internal static WinColor Acento          => WinColor.FromArgb(22,  160, 230);
+        internal static WinColor TextoPrincipal  => WinColor.FromArgb(40,  50,  60);
+        internal static WinColor TextoSecundario => WinColor.FromArgb(100, 110, 120);
+        internal static WinColor ColVerde        => WinColor.FromArgb(39,  201, 111);
+        internal static WinColor ColAmarillo     => WinColor.FromArgb(255, 196, 0);
+        internal static WinColor ColRojo         => WinColor.FromArgb(229, 57,  53);
+        internal static WinColor ColGris         => WinColor.FromArgb(200, 210, 220);
+
+        internal static Font FTitulo => new Font("Segoe UI", 10f, FontStyle.Bold);
+        internal static Font FNormal => new Font("Segoe UI",  9f, FontStyle.Regular);
+        internal static Font FPeque  => new Font("Segoe UI",  8f, FontStyle.Regular);
+        internal static Font FBold   => new Font("Segoe UI",  9f, FontStyle.Bold);
+
+        internal static WinButton Btn(string txt, WinColor bg, int x, int y, int w = 120, int h = 32)
+        {
+            var b = new WinButton
+            {
+                Text = txt, Location = new WinPoint(x, y), Size = new WinSize(w, h),
+                BackColor = bg, ForeColor = (bg == Acento || bg == ColGris || bg == ColRojo) ? WinColor.White : TextoPrincipal, FlatStyle = FlatStyle.Flat,
+                Font = FBold, Cursor = Cursors.Hand
+            };
+            b.FlatAppearance.BorderSize = 0;
+            b.FlatAppearance.MouseOverBackColor = (bg == Acento) ? WinColor.FromArgb(41, 182, 246) : FondoMedio;
+            return b;
+        }
+
+        internal static WinButton BtnGrande(string txt, int y, bool activo = true, WinColor? bg = null)
+        {
+            var fondo = activo ? (bg ?? FondoPanel) : FondoMedio;
+            var b = new WinButton
+            {
+                Text = txt, Location = new WinPoint(16, y), Size = new WinSize(434, 54),
+                BackColor = fondo, ForeColor = activo ? TextoPrincipal : TextoSecundario,
+                FlatStyle = FlatStyle.Flat, Font = FNormal,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(14, 0, 0, 0),
+                Cursor = activo ? Cursors.Hand : Cursors.Default,
+                Enabled = activo
+            };
+            b.FlatAppearance.BorderSize = 1;
+            b.FlatAppearance.BorderColor = activo ? Acento : ColGris;
+            b.FlatAppearance.MouseOverBackColor = activo ? FondoMedio : FondoMedio;
+            return b;
+        }
+
+        internal static WinLabel Titulo(string txt, int x, int y) =>
+            new WinLabel { Text = txt, Location = new WinPoint(x, y), AutoSize = true,
+                Font = FTitulo, ForeColor = Acento, BackColor = WinColor.Transparent };
+
+        internal static WinLabel Lbl(string txt, int x, int y, WinColor? col = null) =>
+            new WinLabel { Text = txt, Location = new WinPoint(x, y), AutoSize = true,
+                Font = FNormal, ForeColor = col ?? TextoSecundario, BackColor = WinColor.Transparent };
+
+        internal static WinPanel PanelInfo(string txt, int y, WinColor borde, int h = 44)
+        {
+            var p = new WinPanel { Location = new WinPoint(16, y), Size = new WinSize(434, h),
+                BackColor = FondoPanel };
+            var l = new WinLabel { Text = txt, Location = new WinPoint(14, 7),
+                Size = new WinSize(410, h - 14), Font = FPeque,
+                ForeColor = TextoSecundario, BackColor = WinColor.Transparent };
+            p.Controls.Add(l);
+            var bc = borde;
+            p.Paint += (s, e) => e.Graphics.FillRectangle(new SolidBrush(bc), 0, 0, 3, h);
+            return p;
+        }
+
+        internal static WinPanel Sep(int y) =>
+            new WinPanel { Location = new WinPoint(16, y), Size = new WinSize(434, 1),
+                BackColor = ColGris };
+
+        internal static WinPanel HeaderLogo(int ancho)
+        {
+            var header = new WinPanel
+            {
+                Location = new WinPoint(0, 0), Size = new WinSize(ancho, 64),
+                BackColor = WinColor.White
+            };
+            var logo = new WinLabel
+            {
+                Text = "POSTENSA",
+                Location = new WinPoint(16, 8), AutoSize = false, Size = new WinSize(160, 48),
+                Font = new Font("Segoe UI", 18f, FontStyle.Bold),
+                ForeColor = Acento, BackColor = WinColor.Transparent,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            var sub = new WinLabel
+            {
+                Text = "Design & Build — Plugin BIM Estructural",
+                Location = new WinPoint(180, 22), AutoSize = true,
+                Font = new Font("Segoe UI", 8f, FontStyle.Regular),
+                ForeColor = TextoSecundario, BackColor = WinColor.Transparent
+            };
+            var ver = new WinLabel
+            {
+                Text = "v2.0", Location = new WinPoint(ancho - 60, 24), AutoSize = true,
+                Font = new Font("Segoe UI", 8f, FontStyle.Regular),
+                ForeColor = TextoPrincipal, BackColor = WinColor.Transparent
+            };
+            header.Paint += (s, e) =>
+                e.Graphics.FillRectangle(new SolidBrush(Acento), 0, 61, ancho, 3);
+            header.Controls.AddRange(new System.Windows.Forms.Control[] { logo, sub, ver });
+            return header;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  UTILIDADES
+    // ════════════════════════════════════════════════════════
     internal static class Utils
     {
         internal static readonly List<BuiltInCategory> Cats = new List<BuiltInCategory>
@@ -81,8 +192,10 @@ namespace PluginEstructural
 
         internal static readonly HashSet<long> CatsAcero = new HashSet<long>
         {
-            (long)BuiltInCategory.OST_StructuralFraming, (long)BuiltInCategory.OST_StructuralTruss,
-            (long)BuiltInCategory.OST_StructConnections, (long)BuiltInCategory.OST_StructuralStiffener,
+            (long)BuiltInCategory.OST_StructuralFraming,
+            (long)BuiltInCategory.OST_StructuralTruss,
+            (long)BuiltInCategory.OST_StructConnections,
+            (long)BuiltInCategory.OST_StructuralStiffener,
         };
 
         internal static bool EsPermitido(Element e) =>
@@ -90,13 +203,14 @@ namespace PluginEstructural
 
         internal static List<Solid> ObtenerSolidos(Element elem)
         {
-            var lst  = new List<Solid>();
-            bool ac  = elem.Category != null && CatsAcero.Contains(elem.Category.Id.Value);
-            ProcGeo(elem.get_Geometry(new Options { DetailLevel = ViewDetailLevel.Fine, ComputeReferences = true }), lst, ac);
+            var lst = new List<Solid>();
+            bool ac = elem.Category != null && CatsAcero.Contains(elem.Category.Id.Value);
+            ProcGeo(elem.get_Geometry(new Options
+                { DetailLevel = ViewDetailLevel.Fine, ComputeReferences = true }), lst, ac);
             return lst;
         }
 
-        private static void ProcGeo(GeometryElement g, List<Solid> lst, bool ac)
+        static void ProcGeo(GeometryElement g, List<Solid> lst, bool ac)
         {
             if (g == null) return;
             foreach (GeometryObject o in g)
@@ -107,14 +221,13 @@ namespace PluginEstructural
             }
         }
 
-        // ── Rutas de registro de auditoría ──────────────────
-        // Estructura: [Proyecto]\Registro_BIM\YYYY-MM-DD_HHmm\OLD\  y  \NEW\
         internal static string RutaRegistro(Document doc)
         {
-            string base_ = string.IsNullOrEmpty(doc.PathName)
-                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "PluginEstructural")
+            string b = string.IsNullOrEmpty(doc.PathName)
+                ? Path.Combine(Environment.GetFolderPath(
+                    Environment.SpecialFolder.MyDocuments), "PluginEstructural")
                 : Path.GetDirectoryName(doc.PathName);
-            return Path.Combine(base_, "Registro_BIM");
+            return Path.Combine(b, "Registro_BIM");
         }
 
         internal static string Safe(string s)
@@ -123,32 +236,58 @@ namespace PluginEstructural
             return s;
         }
 
-        internal static RevColor Verde    => new RevColor(0, 200, 80);
-        internal static RevColor Amarillo => new RevColor(255, 200, 0);
-        internal static RevColor Rojo     => new RevColor(220, 50, 50);
+        internal static RevColor Verde    => new RevColor(39,  201, 111);
+        internal static RevColor Amarillo => new RevColor(255, 196, 0);
 
-        // Exportar IFC a una carpeta concreta
         internal static void ExportarIFC(Document doc, string carpeta, string nombre)
         {
             Directory.CreateDirectory(carpeta);
             var opts = new IFCExportOptions
-            {
-                FileVersion          = IFCVersion.IFC2x3CV2,
-                ExportBaseQuantities = true,
-                WallAndColumnSplitting = false,
-            };
+                { FileVersion = IFCVersion.IFC2x3CV2, ExportBaseQuantities = true };
             using (var t = new Transaction(doc, "Exportar IFC"))
+            { t.Start(); doc.Export(carpeta, nombre, opts); t.Commit(); }
+        }
+
+        internal static void OcultarCategoriasRuido(Document doc, View3D vista)
+        {
+            var builtIn = new[]
             {
-                t.Start();
-                doc.Export(carpeta, nombre, opts);
-                t.Commit();
+                BuiltInCategory.OST_Dimensions,      BuiltInCategory.OST_TextNotes,
+                BuiltInCategory.OST_Grids,           BuiltInCategory.OST_Levels,
+                BuiltInCategory.OST_CLines, BuiltInCategory.OST_RasterImages,
+                BuiltInCategory.OST_Mass,            BuiltInCategory.OST_Topography,
+                BuiltInCategory.OST_Cameras,         BuiltInCategory.OST_SectionBox,
+                BuiltInCategory.OST_SketchLines,
+            };
+            foreach (var c in builtIn)
+            {
+                try
+                {
+                    var cat = Category.GetCategory(doc, c);
+                    if (cat != null && vista.CanCategoryBeHidden(cat.Id))
+                        vista.SetCategoryHidden(cat.Id, true);
+                }
+                catch { }
+            }
+            foreach (Category cat in doc.Settings.Categories)
+            {
+                try
+                {
+                    if (cat.Name.Contains(".dwg") || cat.Name.Contains(".dxf") ||
+                        cat.Name.Contains(".dgn") || cat.Name.Contains(".sat") ||
+                        cat.Name.Contains("Import") || cat.Name.Contains("Linked") ||
+                        cat.Name.Contains(".rvt"))
+                        if (vista.CanCategoryBeHidden(cat.Id))
+                            vista.SetCategoryHidden(cat.Id, true);
+                }
+                catch { }
             }
         }
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  HASH LIGERO — para detectar cambios sin JSON externo
-    // ═══════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════
+    //  HASH
+    // ════════════════════════════════════════════════════════
     internal static class HashElem
     {
         internal static string Calcular(Element e)
@@ -156,16 +295,153 @@ namespace PluginEstructural
             var sb = new StringBuilder();
             sb.Append(e.Category?.Name ?? "");
             var bb = e.get_BoundingBox(null);
-            if (bb != null) { sb.Append(bb.Min.X.ToString("F3")); sb.Append(bb.Min.Y.ToString("F3")); sb.Append(bb.Min.Z.ToString("F3")); sb.Append(bb.Max.X.ToString("F3")); sb.Append(bb.Max.Y.ToString("F3")); sb.Append(bb.Max.Z.ToString("F3")); }
+            if (bb != null)
+            {
+                sb.Append(bb.Min.X.ToString("F3")); sb.Append(bb.Min.Y.ToString("F3"));
+                sb.Append(bb.Min.Z.ToString("F3")); sb.Append(bb.Max.X.ToString("F3"));
+                sb.Append(bb.Max.Y.ToString("F3")); sb.Append(bb.Max.Z.ToString("F3"));
+            }
             foreach (Parameter p in e.Parameters)
                 try { if (p.HasValue && !p.IsReadOnly) sb.Append(p.AsValueString() ?? ""); } catch { }
             return sb.ToString().GetHashCode().ToString("X8");
         }
+
+        internal static Dictionary<string, string> ParamsLegibles(Element e)
+        {
+            var dic = new Dictionary<string, string>();
+            var nombres = new[] { "b", "h", "Ancho", "Alto", "Espesor", "Longitud",
+                "Nivel", "Desfase base", "Desfase superior", "Tipo" };
+            foreach (var n in nombres)
+            {
+                var p = e.LookupParameter(n);
+                if (p != null && p.HasValue)
+                    dic[n] = p.AsValueString() ?? p.AsString() ?? "";
+            }
+            var bb = e.get_BoundingBox(null);
+            if (bb != null) dic["Pos Z"] = bb.Min.Z.ToString("F2") + "m";
+
+            var paramFto = e.get_Parameter(BuiltInParameter.ELEM_FAMILY_AND_TYPE_PARAM);
+            dic["Familia y Tipo"] = paramFto != null && paramFto.AsValueString() != null
+                ? paramFto.AsValueString() : (e.Category?.Name + " - " + e.Name);
+
+            var paramLvl = e.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM) ??
+                           e.get_Parameter(BuiltInParameter.SCHEDULE_LEVEL_PARAM) ??
+                           e.get_Parameter(BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM);
+            if (paramLvl != null && paramLvl.AsElementId() != ElementId.InvalidElementId)
+            {
+                var lvl = e.Document.GetElement(paramLvl.AsElementId());
+                dic["Nivel / Restriccion"] = lvl?.Name ?? "N/A";
+            }
+            else
+            {
+                dic["Nivel / Restriccion"] = "N/A";
+            }
+
+            return dic;
+        }
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  MÓDULO 1 — EXPORTAR SAT
-    // ═══════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════
+    //  GEMINI
+    // ════════════════════════════════════════════════════════
+    internal static class Gemini
+    {
+        static readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+
+        internal static string Describir(string cat, string tipo,
+            Dictionary<string, string> antes, Dictionary<string, string> despues)
+        {
+            string fallback = Auto(tipo, antes, despues);
+            string key = Config.Get("GEMINI_API_KEY");
+            if (string.IsNullOrEmpty(key)) return fallback;
+            try
+            {
+                var cambiosList = new List<string>();
+                foreach (var k in antes.Keys)
+                    if (despues.ContainsKey(k) && antes[k] != despues[k])
+                        cambiosList.Add(k + ": " + antes[k] + " a " + despues[k]);
+                if (cambiosList.Count == 0) return fallback;
+
+                string prompt = "Soy BIM Manager de estructuras. Genera descripcion tecnica corta " +
+                    "(max 100 caracteres) en espanol de este cambio en Revit. Elemento: " + tipo +
+                    " categoria " + cat + ". Cambios: " + string.Join(", ", cambiosList) +
+                    ". Solo la descripcion sin comillas ni puntuacion al final.";
+
+                string json = "{\"contents\":[{\"parts\":[{\"text\":\"" +
+                    prompt.Replace("\\", "").Replace("\"", "'").Replace("\n", " ") + "\"}]}]}";
+
+                string url = "https://generativelanguage.googleapis.com/v1beta/models/" +
+                    "gemini-1.5-flash:generateContent?key=" + key;
+
+                var t = _http.PostAsync(url, new StringContent(json, Encoding.UTF8, "application/json"));
+                t.Wait(18000);
+                if (!t.Result.IsSuccessStatusCode) return fallback;
+                string resp = t.Result.Content.ReadAsStringAsync().Result;
+                int i = resp.IndexOf("\"text\":"); if (i < 0) return fallback;
+                i = resp.IndexOf("\"", i + 7) + 1;
+                int f = resp.IndexOf("\"", i);
+                if (f <= i) return fallback;
+                string res = resp.Substring(i, f - i).Trim().Replace("\\n", " ");
+                return string.IsNullOrEmpty(res) ? fallback : res;
+            }
+            catch { return fallback; }
+        }
+
+        internal static string NuevoDesc(string cat, string tipo)
+            => "Nuevo elemento: " + tipo + " (" + cat + ")";
+
+        internal static string ElimDesc(string cat)
+            => "Elemento eliminado de categoria: " + cat;
+
+        static string Auto(string tipo, Dictionary<string, string> a, Dictionary<string, string> d)
+        {
+            var cambios = a.Keys.Where(k => d.ContainsKey(k) && a[k] != d[k])
+                .Select(k => k + ": " + a[k] + " a " + d[k]).ToList();
+            return cambios.Count == 0
+                ? tipo + ": cambio en geometria o posicion"
+                : tipo + " modificado — " + string.Join(", ", cambios.Take(3));
+        }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  RIBBON
+    // ════════════════════════════════════════════════════════
+    public class AppInicio : IExternalApplication
+    {
+        public Result OnStartup(UIControlledApplication app)
+        {
+            try
+            {
+                const string TAB = "BIM Estructural";
+                try { app.CreateRibbonTab(TAB); } catch { }
+                var panel = app.CreateRibbonPanel(TAB, "Postensa BIM");
+                string dll = typeof(AppInicio).Assembly.Location;
+                panel.AddItem(new PushButtonData("SAT", "Exportar\nSAT", dll,
+                    "PluginEstructural.CmdExportarSAT")
+                    { ToolTip = "Genera solido unico -90 para SolidWorks" });
+                panel.AddSeparator();
+                panel.AddItem(new PushButtonData("Comparar", "Comparar\nVersiones", dll,
+                    "PluginEstructural.CmdCompararVersiones")
+                    { ToolTip = "OLD/NEW con reporte IA y vista limpia" });
+                panel.AddSeparator();
+                panel.AddItem(new PushButtonData("Corte", "Corte\nGeometrico", dll,
+                    "PluginEstructural.CmdCorteJerarquico")
+                    { ToolTip = "Une y corta geometria estructural de forma jerarquica" });
+                panel.AddSeparator();
+                panel.AddItem(new PushButtonData("SharedView", "Vista\nCompartida", dll,
+                    "PluginEstructural.CmdCompartirVista")
+                    { ToolTip = "Abre Vistas Compartidas de Revit para compartir el modelo online" });
+                return Result.Succeeded;
+            }
+            catch (Exception ex) { TaskDlg.Show("Error", ex.Message); return Result.Failed; }
+        }
+        public Result OnShutdown(UIControlledApplication app) => Result.Succeeded;
+    }
+
+
+    // ════════════════════════════════════════════════════════
+    //  CMD 1 — EXPORTAR SAT
+    // ════════════════════════════════════════════════════════
     [Transaction(TransactionMode.Manual)]
     public class CmdExportarSAT : IExternalCommand
     {
@@ -173,42 +449,49 @@ namespace PluginEstructural
         {
             var uidoc = data.Application.ActiveUIDocument;
             var doc   = uidoc.Document;
-
             using (var dlg = new VentanaSAT(doc))
             {
                 if (dlg.ShowDialog() != DialogResult.OK) return Result.Cancelled;
-
                 var ids = dlg.UsarSeleccion
-                    ? uidoc.Selection.GetElementIds()
-                    : IdsModelo(doc, dlg.Niveles);
-
-                if (ids.Count == 0) { TaskDlg.Show("Atención", "Sin elementos en el alcance elegido."); return Result.Cancelled; }
-
+                    ? uidoc.Selection.GetElementIds() : IdsModelo(doc, dlg.Niveles);
+                if (ids.Count == 0)
+                { TaskDlg.Show("Sin elementos", "No hay elementos estructurales."); return Result.Cancelled; }
                 var sols = new List<Solid>();
                 foreach (var id in ids)
-                {
-                    var e = doc.GetElement(id);
-                    if (Utils.EsPermitido(e)) sols.AddRange(Utils.ObtenerSolidos(e));
-                }
-                if (sols.Count == 0) { TaskDlg.Show("Error", "Sin geometría válida."); return Result.Failed; }
-
+                { var e = doc.GetElement(id); if (Utils.EsPermitido(e)) sols.AddRange(Utils.ObtenerSolidos(e)); }
+                if (sols.Count == 0)
+                { TaskDlg.Show("Error", "Sin geometria valida."); return Result.Failed; }
                 var gen = new List<ElementId>();
-                using (var t = new Transaction(doc, "SAT — Sólido Único"))
+                using (var t = new Transaction(doc, "SAT"))
                 {
                     t.Start();
                     for (int i = 0; i < sols.Count; i += 100)
-                        ProcesarLote(doc, sols.Skip(i).Take(100).ToList(), gen, i / 100 + 1);
-                    if (gen.Count > 0) CrearVistaSAT(doc, gen);
+                        Lote(doc, sols.Skip(i).Take(100).ToList(), gen, i / 100 + 1);
+                    if (gen.Count > 0) CrearVista(doc, gen);
                     t.Commit();
                 }
-
-                var vista = new FilteredElementCollector(doc).OfClass(typeof(View3D)).Cast<View3D>()
-                    .FirstOrDefault(v => v.Name == "EXPORTACION_SAT");
-                if (vista != null) uidoc.ActiveView = vista;
-
-                TaskDlg.Show("✅ SAT Listo",
-                    $"Extracción completa.\n• Sólidos: {sols.Count}\n• DirectShapes: {gen.Count}\n\n" +
-                    "Vista 'EXPORTACION_SAT' activa.\nExporta: Archivo → Exportar → CAD → SAT");
+                var vista = new FilteredElementCollector(doc).OfClass(typeof(View3D))
+                    .Cast<View3D>().FirstOrDefault(v => v.Name == "EXPORTACION_SAT");
+                if (vista != null) 
+                {
+                    uidoc.ActiveView = vista;
+                    try
+                    {
+                        Directory.CreateDirectory(dlg.RutaExportacion);
+                        var opts = new SATExportOptions();
+                        doc.Export(dlg.RutaExportacion, Utils.Safe(doc.Title) + "_SAT", new List<ElementId> { vista.Id }, opts);
+                        TaskDlg.Show("SAT Listo",
+                            "Solidos: " + sols.Count + " | Shapes: " + gen.Count +
+                            "\n\nSe ha exportado el archivo SAT en:\n" + dlg.RutaExportacion +
+                            "\n\nVista EXPORTACION_SAT creada y activa.");
+                    }
+                    catch (Exception ex)
+                    {
+                        TaskDlg.Show("SAT Listo",
+                            "Solidos: " + sols.Count + " | Shapes: " + gen.Count +
+                            "\n\nVista EXPORTACION_SAT activa.\nNo se pudo auto-exportar (Error: " + ex.Message + ").\nExporta manualmente: Archivo > Exportar > CAD > SAT");
+                    }
+                }
             }
             return Result.Succeeded;
         }
@@ -221,12 +504,12 @@ namespace PluginEstructural
                 if (!Utils.EsPermitido(e)) continue;
                 if (niveles.Count > 0)
                 {
-                    var lp  = e.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM)
-                           ?? e.get_Parameter(BuiltInParameter.SCHEDULE_LEVEL_PARAM);
+                    var lp = e.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM)
+                          ?? e.get_Parameter(BuiltInParameter.SCHEDULE_LEVEL_PARAM);
                     if (lp != null)
                     {
-                        var lvl = doc.GetElement(lp.AsElementId()) as Level;
-                        if (lvl == null || !niveles.Contains(lvl.Name)) continue;
+                        var lv = doc.GetElement(lp.AsElementId()) as Level;
+                        if (lv == null || !niveles.Contains(lv.Name)) continue;
                     }
                 }
                 ids.Add(e.Id);
@@ -234,7 +517,7 @@ namespace PluginEstructural
             return ids;
         }
 
-        void ProcesarLote(Document doc, List<Solid> chunk, List<ElementId> gen, int idx)
+        void Lote(Document doc, List<Solid> chunk, List<ElementId> gen, int idx)
         {
             IList<GeometryObject> sh = chunk.Cast<GeometryObject>().ToList();
             try
@@ -242,16 +525,18 @@ namespace PluginEstructural
                 var ds = DirectShape.CreateElement(doc, new ElementId(BuiltInCategory.OST_GenericModel));
                 if (ds.IsValidShape(sh))
                 {
-                    ds.ApplicationId = "PluginEstructural"; ds.Name = $"SAT_{idx}"; ds.SetShape(sh);
-                    ElementTransformUtils.RotateElement(doc, ds.Id, Line.CreateBound(XYZ.Zero, XYZ.BasisX), -Math.PI / 2.0);
+                    ds.ApplicationId = "PluginEstructural"; ds.Name = "SAT_" + idx;
+                    ds.SetShape(sh);
+                    ElementTransformUtils.RotateElement(doc, ds.Id,
+                        Line.CreateBound(XYZ.Zero, XYZ.BasisX), -Math.PI / 2.0);
                     gen.Add(ds.Id);
                 }
-                else { doc.Delete(ds.Id); foreach (var s in chunk) SolidoIndividual(doc, s, gen); }
+                else { doc.Delete(ds.Id); foreach (var s in chunk) Solo(doc, s, gen); }
             }
-            catch { foreach (var s in chunk) SolidoIndividual(doc, s, gen); }
+            catch { foreach (var s in chunk) Solo(doc, s, gen); }
         }
 
-        void SolidoIndividual(Document doc, Solid s, List<ElementId> gen)
+        void Solo(Document doc, Solid s, List<ElementId> gen)
         {
             try
             {
@@ -260,7 +545,8 @@ namespace PluginEstructural
                 if (ds.IsValidShape(sh))
                 {
                     ds.ApplicationId = "PluginEstructural"; ds.SetShape(sh);
-                    ElementTransformUtils.RotateElement(doc, ds.Id, Line.CreateBound(XYZ.Zero, XYZ.BasisX), -Math.PI / 2.0);
+                    ElementTransformUtils.RotateElement(doc, ds.Id,
+                        Line.CreateBound(XYZ.Zero, XYZ.BasisX), -Math.PI / 2.0);
                     gen.Add(ds.Id);
                 }
                 else doc.Delete(ds.Id);
@@ -268,13 +554,13 @@ namespace PluginEstructural
             catch { }
         }
 
-        void CrearVistaSAT(Document doc, List<ElementId> gen)
+        void CrearVista(Document doc, List<ElementId> gen)
         {
             var vft = new FilteredElementCollector(doc).OfClass(typeof(ViewFamilyType))
                 .Cast<ViewFamilyType>().FirstOrDefault(x => x.ViewFamily == ViewFamily.ThreeDimensional);
             if (vft == null) return;
-            var old = new FilteredElementCollector(doc).OfClass(typeof(View3D)).Cast<View3D>()
-                .FirstOrDefault(v => v.Name == "EXPORTACION_SAT");
+            var old = new FilteredElementCollector(doc).OfClass(typeof(View3D))
+                .Cast<View3D>().FirstOrDefault(v => v.Name == "EXPORTACION_SAT");
             if (old != null) doc.Delete(old.Id);
             var v = View3D.CreateIsometric(doc, vft.Id);
             v.Name = "EXPORTACION_SAT"; v.DisplayStyle = DisplayStyle.Shading;
@@ -282,10 +568,9 @@ namespace PluginEstructural
         }
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  MÓDULO 2 — COMPARAR VERSIONES  (lógica OLD / NEW)
-    //  Registro de auditoría en carpetas con fecha
-    // ═══════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════
+    //  CMD 2 — COMPARAR VERSIONES
+    // ════════════════════════════════════════════════════════
     internal enum AccionComp { GuardarOLD, CompararYGenerar, Limpiar }
 
     [Transaction(TransactionMode.Manual)]
@@ -293,138 +578,432 @@ namespace PluginEstructural
     {
         public Result Execute(ExternalCommandData data, ref string msg, ElementSet es)
         {
-            var doc      = data.Application.ActiveUIDocument.Document;
-            string regDir = Utils.RutaRegistro(doc);
-            string oldDir = BuscarUltimoOLD(regDir);
-
-            using (var dlg = new VentanaComparar(oldDir != null, oldDir))
+            var doc   = data.Application.ActiveUIDocument.Document;
+            var uidoc = data.Application.ActiveUIDocument;
+            string reg = Utils.RutaRegistro(doc);
+            
+            using (var dlg = new VentanaComparar(reg, BuscarOLD))
             {
                 if (dlg.ShowDialog() != DialogResult.OK) return Result.Cancelled;
-
-                switch (dlg.Op)
+                reg = dlg.RutaElegida;
+                string old = BuscarOLD(reg);
+                
+                if (dlg.Op == AccionComp.GuardarOLD)      return GuardarOLD(doc, reg);
+                if (dlg.Op == AccionComp.CompararYGenerar)
                 {
-                    case AccionComp.GuardarOLD:
-                        return GuardarVersionOLD(doc, regDir);
-
-                    case AccionComp.CompararYGenerar:
-                        if (oldDir == null) { TaskDlg.Show("Sin versión anterior", "Primero guarda una versión OLD."); return Result.Cancelled; }
-                        return CompararYColorear(doc, regDir, oldDir);
-
-                    case AccionComp.Limpiar:
-                        Limpiar(doc);
-                        TaskDlg.Show("✅ Listo", "Colores de comparación eliminados de la vista activa.");
-                        return Result.Succeeded;
+                    if (old == null)
+                    { TaskDlg.Show("Sin OLD", "Guarda una version OLD primero."); return Result.Cancelled; }
+                    return Comparar(doc, uidoc, reg, old);
                 }
+                Limpiar(doc);
+                TaskDlg.Show("Listo", "Colores eliminados.");
             }
             return Result.Succeeded;
         }
 
-        // ── Busca la carpeta OLD más reciente ────────────────
-        string BuscarUltimoOLD(string regDir)
+        string BuscarOLD(string reg)
         {
-            if (!Directory.Exists(regDir)) return null;
-            return Directory.GetDirectories(regDir, "*")
+            if (!Directory.Exists(reg)) return null;
+            var c = Directory.GetDirectories(reg)
                 .Where(d => Directory.Exists(Path.Combine(d, "OLD")))
-                .OrderByDescending(d => d)
-                .FirstOrDefault() is string carpeta
-                    ? Path.Combine(carpeta, "OLD") : null;
+                .OrderByDescending(d => d).FirstOrDefault();
+            return c != null ? Path.Combine(c, "OLD") : null;
         }
 
-        // ── Exporta IFC como OLD con hash de elementos ───────
-        Result GuardarVersionOLD(Document doc, string regDir)
+        Result GuardarOLD(Document doc, string reg)
         {
-            string stamp   = DateTime.Now.ToString("yyyy-MM-dd_HHmm");
-            string sesion  = Path.Combine(regDir, stamp);
-            string oldPath = Path.Combine(sesion, "OLD");
-
-            Utils.ExportarIFC(doc, oldPath, Utils.Safe(doc.Title) + "_OLD");
-
-            // Guardar hashes de todos los elementos estructurales
-            var hashes = new StringBuilder();
-            hashes.AppendLine("UniqueId|CategoriaId|Hash");
-            foreach (Element e in new FilteredElementCollector(doc).WhereElementIsNotElementType())
-                if (Utils.EsPermitido(e))
-                    hashes.AppendLine($"{e.UniqueId}|{e.Category?.Id.Value}|{HashElem.Calcular(e)}");
-
-            File.WriteAllText(Path.Combine(oldPath, "hashes.csv"), hashes.ToString(), Encoding.UTF8);
-            EscribirLog(sesion, "OLD guardado", doc, 0, 0, 0);
-
-            TaskDlg.Show("✅ Versión OLD Guardada",
-                $"Registro guardado en:\n{oldPath}\n\n" +
-                $"  📄 IFC del estado actual\n  📋 hashes.csv con estado de {ContarEstructurales(doc)} elementos\n\n" +
-                "Cuando hagas cambios en el modelo, usa\n'Comparar con versión anterior' para ver las diferencias.");
+            string stamp = DateTime.Now.ToString("yyyy-MM-dd_HHmm");
+            string path  = Path.Combine(reg, stamp, "OLD");
+            Utils.ExportarIFC(doc, path, Utils.Safe(doc.Title) + "_OLD");
+            var sb = new StringBuilder();
+            sb.AppendLine("UniqueId|Categoria|Tipo|Hash|Params");
+            foreach (Element e in new FilteredElementCollector(doc, doc.ActiveView.Id).WhereElementIsNotElementType())
+            {
+                if (!Utils.EsPermitido(e)) continue;
+                var pars = HashElem.ParamsLegibles(e);
+                sb.AppendLine(e.UniqueId + "|" + e.Category?.Name + "|" + e.Name + "|" +
+                    HashElem.Calcular(e) + "|" +
+                    string.Join(";", pars.Select(kv => kv.Key + "=" + kv.Value)));
+            }
+            File.WriteAllText(Path.Combine(path, "hashes.csv"), sb.ToString(), Encoding.UTF8);
+            Log(Path.Combine(reg, stamp), "OLD guardado", doc, 0, 0, 0);
+            TaskDlg.Show("OLD Guardado", "Guardado en:\n" + path);
             return Result.Succeeded;
         }
 
-        // ── Compara OLD vs modelo actual y colorea ───────────
-        Result CompararYColorear(Document doc, string regDir, string oldHashDir)
+        Result Comparar(Document doc, UIDocument uidoc, string reg, string oldDir)
         {
-            // Leer hashes del OLD
-            string hashFile = Path.Combine(oldHashDir, "hashes.csv");
-            if (!File.Exists(hashFile)) { TaskDlg.Show("Error", $"No se encontró hashes.csv en:\n{oldHashDir}"); return Result.Failed; }
+            string hf = Path.Combine(oldDir, "hashes.csv");
+            if (!File.Exists(hf))
+            { TaskDlg.Show("Error", "No se encontro hashes.csv en:\n" + oldDir); return Result.Failed; }
 
-            var anterior = new Dictionary<string, string>(); // UniqueId → Hash
-            foreach (var linea in File.ReadAllLines(hashFile).Skip(1))
+            var ant = new Dictionary<string, (string hash, string cat, string tipo, Dictionary<string, string> pars)>();
+            foreach (var l in File.ReadAllLines(hf).Skip(1))
             {
-                var p = linea.Split('|');
-                if (p.Length >= 3) anterior[p[0]] = p[2];
+                var p = l.Split('|');
+                if (p.Length < 5) continue;
+                var pars = p[4].Split(';').Where(x => x.Contains("="))
+                    .ToDictionary(x => x.Split('=')[0],
+                        x => x.Split(new[] { '=' }, 2).Length > 1 ? x.Split(new[] { '=' }, 2)[1] : "");
+                ant[p[0]] = (p[3], p[1], p[2], pars);
             }
 
-            // Estado actual
-            var actuales = new FilteredElementCollector(doc).WhereElementIsNotElementType()
+            var act = new FilteredElementCollector(doc, doc.ActiveView.Id).WhereElementIsNotElementType()
                 .Where(Utils.EsPermitido).ToDictionary(e => e.UniqueId);
 
-            var nuevos      = actuales.Where(kv => !anterior.ContainsKey(kv.Key)).Select(kv => kv.Value).ToList();
-            var modificados = actuales.Where(kv => anterior.ContainsKey(kv.Key) && HashElem.Calcular(kv.Value) != anterior[kv.Key]).Select(kv => kv.Value).ToList();
-            int eliminados  = anterior.Keys.Count(uid => !actuales.ContainsKey(uid));
+            var nuevos = act.Where(kv => !ant.ContainsKey(kv.Key)).Select(kv => kv.Value).ToList();
+            var mods   = act.Where(kv => ant.ContainsKey(kv.Key) &&
+                HashElem.Calcular(kv.Value) != ant[kv.Key].hash).Select(kv => kv.Value).ToList();
+            var elims  = ant.Keys.Where(uid => !act.ContainsKey(uid)).ToList();
 
-            // Colorear vista activa
-            RevitView vista  = doc.ActiveView;
-            var  patron = new FilteredElementCollector(doc).OfClass(typeof(FillPatternElement))
-                .Cast<FillPatternElement>().FirstOrDefault(fp => fp.GetFillPattern().IsSolidFill);
-
-            using (var t = new Transaction(doc, "Colorear Cambios BIM"))
+            // Crear vista COMPARACION_BIM
+            View3D vistaComp = null;
+            using (var t = new Transaction(doc, "Crear Vista Comparacion"))
             {
                 t.Start();
-                foreach (var e in actuales.Values)
-                    try { vista.SetElementOverrides(e.Id, new OverrideGraphicSettings()); } catch { }
-                AplicarColor(vista, nuevos,      Utils.Verde,    patron);
-                AplicarColor(vista, modificados, Utils.Amarillo, patron);
+                
+                // Guardamos la vista activa original antes de procesar
+                RevView viewOrigen = doc.ActiveView;
+                
+                var existente = new FilteredElementCollector(doc).OfClass(typeof(View3D))
+                    .Cast<View3D>().FirstOrDefault(v => v.Name == "COMPARACION_BIM");
+                if (existente != null)
+                {
+                    var otra = new FilteredElementCollector(doc).OfClass(typeof(View3D))
+                        .Cast<View3D>().FirstOrDefault(v => v.Id != existente.Id && !v.IsTemplate);
+                    if (otra != null) uidoc.ActiveView = otra;
+                    doc.Delete(existente.Id);
+                }
+
+                if (viewOrigen is View3D act3D && viewOrigen.Name != "COMPARACION_BIM")
+                {
+                    vistaComp = doc.GetElement(act3D.Duplicate(ViewDuplicateOption.Duplicate)) as View3D;
+                }
+                else
+                {
+                    var vft = new FilteredElementCollector(doc).OfClass(typeof(ViewFamilyType))
+                        .Cast<ViewFamilyType>().FirstOrDefault(x => x.ViewFamily == ViewFamily.ThreeDimensional);
+                    vistaComp = View3D.CreateIsometric(doc, vft.Id);
+                }
+
+                vistaComp.Name = "COMPARACION_BIM";
+                // Remover template para asegurar que los colores de comparación se vean
+                vistaComp.ViewTemplateId = ElementId.InvalidElementId;
+                vistaComp.DisplayStyle = DisplayStyle.ShadingWithEdges;
                 t.Commit();
             }
 
-            // Exportar IFC NEW en nueva sesión con el mismo timestamp
-            string stampSesion = Path.GetFileName(Path.GetDirectoryName(oldHashDir));
-            string sesionDir   = Path.Combine(regDir, stampSesion);
-            string newPath     = Path.Combine(sesionDir, "NEW");
-            Utils.ExportarIFC(doc, newPath, Utils.Safe(doc.Title) + "_NEW");
+            var patron = new FilteredElementCollector(doc).OfClass(typeof(FillPatternElement))
+                .Cast<FillPatternElement>().FirstOrDefault(fp => fp.GetFillPattern().IsSolidFill);
 
-            // Log de auditoría
-            EscribirLog(sesionDir, "Comparación completada", doc, nuevos.Count, modificados.Count, eliminados);
+            using (var t = new Transaction(doc, "Colorear Cambios"))
+            {
+                t.Start();
+                foreach (var e in act.Values)
+                    try { vistaComp.SetElementOverrides(e.Id, new OverrideGraphicSettings()); } catch { }
+                Colorear(vistaComp, nuevos, Utils.Verde,    patron);
+Colorear(vistaComp, mods,   Utils.Amarillo, patron);
 
-            // Resumen de diferencias en CSV para auditoría
-            EscribirDiferenciasCSV(sesionDir, doc, nuevos, modificados, anterior.Keys.Where(uid => !actuales.ContainsKey(uid)).ToList());
+// Transparentar elementos sin cambios
+var idsConCambio = nuevos.Select(e => e.Id)
+    .Concat(mods.Select(e => e.Id)).ToHashSet();
+var oTrans = new OverrideGraphicSettings();
+oTrans.SetSurfaceTransparency(75);
+oTrans.SetProjectionLineColor(new RevColor(80, 100, 120));
+foreach (var e in act.Values)
+    if (!idsConCambio.Contains(e.Id))
+        try { vistaComp.SetElementOverrides(e.Id, oTrans); } catch { }
 
-            TaskDlg.Show("📊 Comparación Completada",
-                $"Vista activa: '{vista.Name}'\n\n" +
-                $"🟢 Nuevos:      {nuevos.Count}\n" +
-                $"🟡 Modificados: {modificados.Count}\n" +
-                $"🔴 Eliminados:  {eliminados}\n\n" +
-                $"Registro de auditoría guardado en:\n{sesionDir}\n\n" +
-                "Usa 'Generar Viewer' para compartir con obra.");
+Utils.OcultarCategoriasRuido(doc, vistaComp);
+                t.Commit();
+            }
+
+            uidoc.ActiveView = vistaComp;
+
+            string stamp  = Path.GetFileName(Path.GetDirectoryName(oldDir));
+            string sesion = Path.Combine(reg, stamp);
+            Utils.ExportarIFC(doc, Path.Combine(sesion, "NEW"), Utils.Safe(doc.Title) + "_NEW");
+
+            // Reporte con Gemini
+            var lista = new List<(string estado, string desc, string cat, string tipo, string uid, string famTipo, string nivel)>();
+            foreach (var e in nuevos)
+            {
+                var pd = HashElem.ParamsLegibles(e);
+                lista.Add(("NUEVO", Gemini.NuevoDesc(e.Category?.Name ?? "", e.Name),
+                    e.Category?.Name ?? "", e.Name, e.UniqueId, pd.ContainsKey("Familia y Tipo") ? pd["Familia y Tipo"] : "", pd.ContainsKey("Nivel / Restriccion") ? pd["Nivel / Restriccion"] : ""));
+            }
+            foreach (var e in mods)
+            {
+                var pa = ant.ContainsKey(e.UniqueId) ? ant[e.UniqueId].pars : new Dictionary<string, string>();
+                var pd = HashElem.ParamsLegibles(e);
+                lista.Add(("MODIFICADO", Gemini.Describir(e.Category?.Name ?? "", e.Name, pa, pd),
+                    e.Category?.Name ?? "", e.Name, e.UniqueId, pd.ContainsKey("Familia y Tipo") ? pd["Familia y Tipo"] : "", pd.ContainsKey("Nivel / Restriccion") ? pd["Nivel / Restriccion"] : ""));
+            }
+            foreach (var uid in elims)
+            {
+                var pa = ant[uid].pars;
+                lista.Add(("ELIMINADO", Gemini.ElimDesc(ant[uid].cat),
+                    ant[uid].cat, ant[uid].tipo, uid, pa.ContainsKey("Familia y Tipo") ? pa["Familia y Tipo"] : ant[uid].cat + " - " + ant[uid].tipo, pa.ContainsKey("Nivel / Restriccion") ? pa["Nivel / Restriccion"] : "N/A"));
+            }
+
+            GenerarReporte(sesion, doc.Title, lista);
+            Log(sesion, "Comparacion completada", doc, nuevos.Count, mods.Count, elims.Count);
+
+            TaskDlg.Show("Comparacion Completada",
+                "Vista COMPARACION_BIM activa\n\n" +
+                "Nuevos:      " + nuevos.Count + "\n" +
+                "Modificados: " + mods.Count + "\n" +
+                "Eliminados:  " + elims.Count + "\n\n" +
+                "Reporte en:\n" + sesion);
             return Result.Succeeded;
         }
 
-        void AplicarColor(RevitView v, List<Element> elems, RevColor col, FillPatternElement pat)
+        void Colorear(RevView v, List<Element> elems, RevColor col, FillPatternElement pat)
         {
-            var ogs = new OverrideGraphicSettings();
-            ogs.SetProjectionLineColor(col);
-            ogs.SetSurfaceForegroundPatternColor(col);
-            ogs.SetSurfaceForegroundPatternVisible(true);
-            if (pat != null) ogs.SetSurfaceForegroundPatternId(pat.Id);
-            ogs.SetSurfaceTransparency(30);
-            foreach (var e in elems) try { v.SetElementOverrides(e.Id, ogs); } catch { }
+            var o = new OverrideGraphicSettings();
+            o.SetProjectionLineColor(col); o.SetSurfaceForegroundPatternColor(col);
+            o.SetSurfaceForegroundPatternVisible(true);
+            if (pat != null) o.SetSurfaceForegroundPatternId(pat.Id);
+            o.SetSurfaceTransparency(60);
+            foreach (var e in elems) try { v.SetElementOverrides(e.Id, o); } catch { }
         }
+
+        void GenerarReporte(string sesion, string proyecto,
+            List<(string estado, string desc, string cat, string tipo, string uid, string famTipo, string nivel)> lista)
+        {
+            string nomArchivo = "REPORTE_BIM_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".xlsx";
+            string rutaExcel  = Path.Combine(sesion, nomArchivo);
+            string fecha      = DateTime.Now.ToString("dd/MM/yyyy HH:mm");
+            string usuario    = Environment.UserName;
+            int    totalCamb  = lista.Count;
+            int    nNuevos    = lista.Count(c => c.estado == "NUEVO");
+            int    nMods      = lista.Count(c => c.estado == "MODIFICADO");
+            int    nElims     = lista.Count(c => c.estado == "ELIMINADO");
+
+            try
+            {
+                using (var wb = new ClosedXML.Excel.XLWorkbook())
+                {
+                    // ── PALETA CORPORATIVA ───────────────────────────────────
+                    // Solo un azul Postensa + escala de grises/blancos
+                    var cAzul      = ClosedXML.Excel.XLColor.FromHtml("#1CA0E6"); // azul único
+                    var cGrisOsc   = ClosedXML.Excel.XLColor.FromHtml("#2C3E50"); // gris oscuro (titulo)
+                    var cGrisMed   = ClosedXML.Excel.XLColor.FromHtml("#5D6D7E"); // gris medio (header info)
+                    var cGrisClar  = ClosedXML.Excel.XLColor.FromHtml("#F7F9FC"); // gris muy claro (filas alt)
+                    var cBorde     = ClosedXML.Excel.XLColor.FromHtml("#D5DDE5"); // borde sutil
+                    var cBlanco    = ClosedXML.Excel.XLColor.White;
+                    var cNegro     = ClosedXML.Excel.XLColor.Black;
+                    var cTextoGris = ClosedXML.Excel.XLColor.FromHtml("#4A5568"); // texto normal
+                    // Colores de estado (pasteles suaves, fondo claro)
+                    var cBgNuevo   = ClosedXML.Excel.XLColor.FromHtml("#E8F8F0"); // verde pastel
+                    var cTxNuevo   = ClosedXML.Excel.XLColor.FromHtml("#1A7A45"); // verde texto
+                    var cBgMod     = ClosedXML.Excel.XLColor.FromHtml("#FFFDE7"); // amarillo pastel
+                    var cTxMod     = ClosedXML.Excel.XLColor.FromHtml("#7A5200"); // amarillo texto
+                    var cBgElim    = ClosedXML.Excel.XLColor.FromHtml("#FDE8E8"); // rojo pastel
+                    var cTxElim    = ClosedXML.Excel.XLColor.FromHtml("#7A1A1A"); // rojo texto
+
+                    // ── HOJA 1: REPORTE BIM ─────────────────────────────────
+                    var ws = wb.Worksheets.Add("REPORTE BIM");
+                    ws.ShowGridLines = false;
+
+                    // Fila 1: Título principal — gris oscuro + texto blanco + azul bold
+                    var rTit = ws.Range("A1:F1"); rTit.Merge();
+                    rTit.Value = "  INFORME DE CAMBIOS BIM  —  POSTENSA Design & Build";
+                    rTit.Style.Font.Bold        = true;
+                    rTit.Style.Font.FontSize    = 15;
+                    rTit.Style.Font.FontColor   = cBlanco;
+                    rTit.Style.Fill.BackgroundColor = cGrisOsc;
+                    rTit.Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Left;
+                    rTit.Style.Alignment.Vertical   = ClosedXML.Excel.XLAlignmentVerticalValues.Center;
+                    ws.Row(1).Height = 32;
+
+                    // Fila 2: banda azul delgada
+                    var rBanda = ws.Range("A2:F2"); rBanda.Merge();
+                    rBanda.Style.Fill.BackgroundColor = cAzul;
+                    ws.Row(2).Height = 4;
+
+                    // Filas 3-4: info del reporte (fondo gris claro)
+                    void InfoFila(int fila, string k1, string v1, string k2, string v2)
+                    {
+                        ws.Cell(fila, 1).Value = k1;
+                        ws.Cell(fila, 2).Value = v1;
+                        ws.Cell(fila, 4).Value = k2;
+                        ws.Cell(fila, 5).Value = v2;
+                        var r = ws.Range(fila, 1, fila, 7);
+                        r.Style.Fill.BackgroundColor = cGrisClar;
+                        r.Style.Font.FontSize = 9;
+                        foreach (int c in new[] { 1, 4 })
+                        {
+                            ws.Cell(fila, c).Style.Font.Bold      = true;
+                            ws.Cell(fila, c).Style.Font.FontColor  = cGrisMed;
+                        }
+                        foreach (int c in new[] { 2, 5 })
+                            ws.Cell(fila, c).Style.Font.FontColor  = cTextoGris;
+                    }
+                    InfoFila(3, "Proyecto:", proyecto,    "Fecha:",   "'" + fecha);
+                    InfoFila(4, "Usuario:",  usuario,     "Cambios:", totalCamb + "  (+" + nNuevos + "  ~" + nMods + "  -" + nElims + ")");
+                    ws.Row(3).Height = 16; ws.Row(4).Height = 16;
+
+                    // Fila 5: separador vacío
+                    ws.Row(5).Height = 6;
+
+                    // Fila 6: encabezados de tabla — azul Postensa
+                    var hdrs = new[] { "N°", "Estado", "Descripción del Cambio", "Categoría", "Familia y Tipo", "Nivel / Restricción", "UniqueId" };
+                    for (int c = 1; c <= 7; c++)
+                    {
+                        var cel = ws.Cell(6, c);
+                        cel.Value = hdrs[c - 1];
+                        cel.Style.Fill.BackgroundColor = cAzul;
+                        cel.Style.Font.FontColor = cBlanco;
+                        cel.Style.Font.Bold      = true;
+                        cel.Style.Font.FontSize  = 10;
+                        cel.Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Center;
+                        cel.Style.Alignment.Vertical   = ClosedXML.Excel.XLAlignmentVerticalValues.Center;
+                        cel.Style.Border.BottomBorder  = ClosedXML.Excel.XLBorderStyleValues.Thin;
+                        cel.Style.Border.BottomBorderColor = cBlanco;
+                    }
+                    ws.Row(6).Height = 20;
+
+                    // Filas de datos (NUEVO → MODIFICADO → ELIMINADO)
+                    int fila = 7;
+                    int num  = 1;
+                    foreach (var orden in new[] { "NUEVO", "MODIFICADO", "ELIMINADO" })
+                    {
+                        foreach (var item in lista.Where(x => x.estado == orden))
+                        {
+                            bool par  = (fila % 2 == 0);
+                            var bgRow = par ? cBlanco : cGrisClar;
+
+                            // Num
+                            ws.Cell(fila, 1).Value = num++;
+                            ws.Cell(fila, 1).Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Center;
+                            ws.Cell(fila, 1).Style.Font.FontColor = cTextoGris;
+
+                            // Estado (celda coloreada independiente)
+                            var celEst = ws.Cell(fila, 2);
+                            celEst.Value = item.estado;
+                            celEst.Style.Font.Bold = true;
+                            celEst.Style.Font.FontSize = 9;
+                            celEst.Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Center;
+                            if (item.estado == "NUEVO")           { celEst.Style.Fill.BackgroundColor = cBgNuevo; celEst.Style.Font.FontColor = cTxNuevo; }
+                            else if (item.estado == "MODIFICADO") { celEst.Style.Fill.BackgroundColor = cBgMod;   celEst.Style.Font.FontColor = cTxMod;   }
+                            else                                   { celEst.Style.Fill.BackgroundColor = cBgElim;  celEst.Style.Font.FontColor = cTxElim;  }
+
+                            // Otras celdas
+                            ws.Cell(fila, 3).Value = item.desc;
+                            ws.Cell(fila, 4).Value = item.cat;
+                            ws.Cell(fila, 5).Value = item.famTipo;
+                            ws.Cell(fila, 6).Value = item.nivel;
+                            ws.Cell(fila, 7).Value = item.uid;
+
+                            foreach (int col in new[] { 1, 3, 4, 5, 6, 7 })
+                            {
+                                var cel = ws.Cell(fila, col);
+                                cel.Style.Fill.BackgroundColor = bgRow;
+                                cel.Style.Font.FontColor = cTextoGris;
+                                cel.Style.Border.BottomBorder = ClosedXML.Excel.XLBorderStyleValues.Hair;
+                                cel.Style.Border.BottomBorderColor = cBorde;
+                            }
+                            celEst.Style.Border.BottomBorder = ClosedXML.Excel.XLBorderStyleValues.Hair;
+                            celEst.Style.Border.BottomBorderColor = cBorde;
+
+                            ws.Cell(fila, 3).Style.Alignment.WrapText = true;
+                            ws.Row(fila).Height = 28;
+                            fila++;
+                        }
+                    }
+
+                    // Separador antes del resumen
+                    ws.Row(fila).Height = 4;
+                    ws.Range(fila, 1, fila, 7).Style.Fill.BackgroundColor = cAzul;
+                    fila++;
+
+                    // Fila resumen
+                    ws.Range(fila, 1, fila, 7).Style.Fill.BackgroundColor = cGrisClar;
+                    ws.Range(fila, 1, fila, 7).Style.Font.Bold = true;
+                    ws.Cell(fila, 1).Value = "RESUMEN →";
+                    ws.Cell(fila, 1).Style.Font.FontColor = cGrisMed;
+                    ws.Cell(fila, 2).Value = "+" + nNuevos + " Nuevos";
+                    ws.Cell(fila, 2).Style.Font.FontColor = cTxNuevo;
+                    ws.Cell(fila, 3).Value = "~" + nMods + " Modificados";
+                    ws.Cell(fila, 3).Style.Font.FontColor = cTxMod;
+                    ws.Cell(fila, 4).Value = "-" + nElims + " Eliminados";
+                    ws.Cell(fila, 4).Style.Font.FontColor = cTxElim;
+                    ws.Cell(fila, 5).Value = "TOTAL: " + totalCamb;
+                    ws.Cell(fila, 5).Style.Font.FontColor = cGrisOsc;
+                    ws.Row(fila).Height = 20;
+
+                    // Anchos de columna: N°=5 Estado=14 Descripción=52 Categoría=22 FamTipo=35 Nivel=25 UniqueId=40
+                    ws.Column(1).Width = 5;
+                    ws.Column(2).Width = 15;
+                    ws.Column(3).Width = 52;
+                    ws.Column(4).Width = 22;
+                    ws.Column(5).Width = 35;
+                    ws.Column(6).Width = 25;
+                    ws.Column(7).Width = 40;
+
+                    // Freeze encabezados (filas 1-6)
+                    ws.SheetView.FreezeRows(6);
+
+                    // Bordes externos de la tabla
+                    ws.Range(6, 1, fila, 7).Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Medium;
+                    ws.Range(6, 1, fila, 7).Style.Border.OutsideBorderColor = cAzul;
+
+                    // ── HOJA 2: AUDITORIA ────────────────────────────────────
+                    var ws2 = wb.Worksheets.Add("AUDITORIA");
+                    ws2.ShowGridLines = false;
+
+                    // Encabezados auditoria
+                    var hdrs2 = new[] { "Estado", "UniqueId", "Categoria", "Tipo" };
+                    for (int c = 1; c <= 4; c++)
+                    {
+                        ws2.Cell(1, c).Value = hdrs2[c - 1];
+                        ws2.Cell(1, c).Style.Font.Bold = true;
+                        ws2.Cell(1, c).Style.Fill.BackgroundColor = cAzul;
+                        ws2.Cell(1, c).Style.Font.FontColor = cBlanco;
+                        ws2.Cell(1, c).Style.Font.FontSize = 10;
+                    }
+                    ws2.Row(1).Height = 20;
+
+                    int f2 = 2;
+                    foreach (var item in lista)
+                    {
+                        bool par2 = (f2 % 2 == 0);
+                        ws2.Cell(f2, 1).Value = item.estado;
+                        ws2.Cell(f2, 1).Style.Font.Bold = true;
+                        if (item.estado == "NUEVO")           { ws2.Cell(f2, 1).Style.Fill.BackgroundColor = cBgNuevo; ws2.Cell(f2, 1).Style.Font.FontColor = cTxNuevo; }
+                        else if (item.estado == "MODIFICADO") { ws2.Cell(f2, 1).Style.Fill.BackgroundColor = cBgMod;   ws2.Cell(f2, 1).Style.Font.FontColor = cTxMod;   }
+                        else                                   { ws2.Cell(f2, 1).Style.Fill.BackgroundColor = cBgElim;  ws2.Cell(f2, 1).Style.Font.FontColor = cTxElim;  }
+                        ws2.Cell(f2, 2).Value = item.uid;
+                        ws2.Cell(f2, 3).Value = item.cat;
+                        ws2.Cell(f2, 4).Value = item.tipo;
+                        var rg = ws2.Range(f2, 2, f2, 4);
+                        rg.Style.Fill.BackgroundColor = par2 ? cBlanco : cGrisClar;
+                        rg.Style.Font.FontColor = cTextoGris;
+                        rg.Style.Border.BottomBorder = ClosedXML.Excel.XLBorderStyleValues.Hair;
+                        rg.Style.Border.BottomBorderColor = cBorde;
+                        f2++;
+                    }
+                    ws2.Columns().AdjustToContents();
+                    ws2.SheetView.FreezeRows(1);
+
+                    wb.SaveAs(rutaExcel);
+                }
+                // Abrir automáticamente
+                try { System.Diagnostics.Process.Start(rutaExcel); } catch { }
+            }
+            catch
+            {
+                // Fallback a CSV si ClosedXML falla
+                var sb = new StringBuilder();
+                sb.AppendLine("No.|Estado|Descripcion|Categoria|Tipo|UniqueId");
+                int idx = 1;
+                foreach (var item in lista)
+                    sb.AppendLine(idx++ + "|" + item.estado + "|" + item.desc + "|" + item.cat + "|" + item.tipo + "|" + item.uid);
+                File.WriteAllText(Path.Combine(sesion, "REPORTE_BIM.csv"), sb.ToString(), Encoding.UTF8);
+            }
+        }
+
 
         void Limpiar(Document doc)
         {
@@ -432,414 +1011,436 @@ namespace PluginEstructural
             {
                 t.Start();
                 var v = doc.ActiveView;
-                foreach (Element e in new FilteredElementCollector(doc).WhereElementIsNotElementType())
-                    if (Utils.EsPermitido(e)) try { v.SetElementOverrides(e.Id, new OverrideGraphicSettings()); } catch { }
+                foreach (Element e in new FilteredElementCollector(doc, v.Id).WhereElementIsNotElementType())
+                    if (Utils.EsPermitido(e))
+                        try { v.SetElementOverrides(e.Id, new OverrideGraphicSettings()); } catch { }
                 t.Commit();
             }
         }
 
-        int ContarEstructurales(Document doc) =>
-            new FilteredElementCollector(doc).WhereElementIsNotElementType().Count(Utils.EsPermitido);
-
-        void EscribirLog(string sesion, string accion, Document doc, int nuevos, int mods, int elim)
+        void Log(string sesion, string accion, Document doc, int n, int m, int el)
         {
-            string logFile = Path.Combine(sesion, "auditoria.log");
+            string f = Path.Combine(sesion, "auditoria.log");
             var sb = new StringBuilder();
-            if (File.Exists(logFile)) sb.Append(File.ReadAllText(logFile));
-            sb.AppendLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}]");
-            sb.AppendLine($"  Acción:    {accion}");
-            sb.AppendLine($"  Proyecto:  {doc.Title}");
-            sb.AppendLine($"  Usuario:   {Environment.UserName}");
-            if (nuevos > 0 || mods > 0 || elim > 0)
-            {
-                sb.AppendLine($"  Nuevos:    {nuevos}");
-                sb.AppendLine($"  Modificados: {mods}");
-                sb.AppendLine($"  Eliminados:  {elim}");
-            }
-            sb.AppendLine();
-            File.WriteAllText(logFile, sb.ToString(), Encoding.UTF8);
-        }
-
-        void EscribirDiferenciasCSV(string sesion, Document doc, List<Element> nuevos, List<Element> mods, IEnumerable<string> elimIds)
-        {
-            var sb = new StringBuilder();
-            sb.AppendLine("Estado|UniqueId|Categoria|Tipo");
-            foreach (var e in nuevos)      sb.AppendLine($"NUEVO|{e.UniqueId}|{e.Category?.Name}|{e.Name}");
-            foreach (var e in mods)        sb.AppendLine($"MODIFICADO|{e.UniqueId}|{e.Category?.Name}|{e.Name}");
-            foreach (var uid in elimIds)   sb.AppendLine($"ELIMINADO|{uid}||");
-            File.WriteAllText(Path.Combine(sesion, "diferencias.csv"), sb.ToString(), Encoding.UTF8);
+            if (File.Exists(f)) sb.Append(File.ReadAllText(f));
+            sb.AppendLine("[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "] " +
+                accion + " — " + doc.Title + " — " + Environment.UserName);
+            if (n > 0 || m > 0 || el > 0)
+                sb.AppendLine("  N:" + n + " M:" + m + " E:" + el);
+            File.WriteAllText(f, sb.ToString(), Encoding.UTF8);
         }
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  MÓDULO 3 — GENERAR VIEWER HTML
-    // ═══════════════════════════════════════════════════════
-    [Transaction(TransactionMode.Manual)]
-    public class CmdGenerarViewer : IExternalCommand
-    {
-        public Result Execute(ExternalCommandData data, ref string msg, ElementSet es)
-        {
-            var doc = data.Application.ActiveUIDocument.Document;
-
-            using (var dlg = new VentanaViewer(doc))
-            {
-                if (dlg.ShowDialog() != DialogResult.OK) return Result.Cancelled;
-
-                string carpeta = dlg.CarpetaSalida;
-                if (!Directory.Exists(carpeta)) { TaskDlg.Show("Error", "Carpeta inválida o no existe."); return Result.Cancelled; }
-
-                string nomIFC = Utils.Safe(doc.Title) + "_viewer";
-                Utils.ExportarIFC(doc, carpeta, nomIFC);
-                File.WriteAllText(Path.Combine(carpeta, "viewer.html"),       GenerarHTML(nomIFC + ".ifc", doc.Title), Encoding.UTF8);
-                File.WriteAllText(Path.Combine(carpeta, "INSTRUCCIONES.txt"), Instrucciones(doc.Title));
-
-                TaskDlg.Show("✅ Viewer Generado",
-                    $"Archivos en:\n{carpeta}\n\n" +
-                    $"📄 {nomIFC}.ifc\n🌐 viewer.html\n📋 INSTRUCCIONES.txt\n\n" +
-                    "Envía la carpeta completa a obra por correo, SharePoint o Drive.");
-
-                System.Diagnostics.Process.Start("explorer.exe", carpeta);
-            }
-            return Result.Succeeded;
-        }
-
-        string GenerarHTML(string nomIFC, string titulo) => $@"<!DOCTYPE html>
-<html lang=""es""><head>
-<meta charset=""UTF-8""/><meta name=""viewport"" content=""width=device-width,initial-scale=1""/>
-<title>Viewer BIM — {titulo}</title>
-<style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-body{{font-family:'Segoe UI',sans-serif;background:#1a1a2e;color:#eee;overflow:hidden}}
-#hdr{{position:fixed;top:0;left:0;right:0;height:50px;background:linear-gradient(90deg,#0f3460,#16213e);
-  display:flex;align-items:center;padding:0 18px;z-index:100;box-shadow:0 2px 8px #0006}}
-#hdr h1{{font-size:15px;color:#e0e0e0}}#hdr span{{font-size:11px;color:#888;margin-left:10px}}
-#tb{{position:fixed;top:50px;left:0;right:0;height:42px;background:#16213e;
-  display:flex;align-items:center;padding:0 12px;gap:7px;z-index:99;border-bottom:1px solid #0f3460}}
-.btn{{background:#0f3460;color:#ccc;border:1px solid #1a4a7a;padding:5px 12px;
-  border-radius:4px;cursor:pointer;font-size:12px;transition:.2s}}
-.btn:hover{{background:#1a4a7a;color:#fff}}.btn.on{{background:#e94560;border-color:#e94560;color:#fff}}
-#leg{{position:fixed;bottom:16px;left:16px;background:rgba(15,52,96,.93);padding:10px 14px;
-  border-radius:8px;z-index:99;border:1px solid #1a4a7a;min-width:165px}}
-#leg h3{{font-size:10px;color:#aaa;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px}}
-.li{{display:flex;align-items:center;gap:7px;margin:4px 0;font-size:12px}}
-.dot{{width:12px;height:12px;border-radius:3px;flex-shrink:0}}
-#inf{{position:fixed;right:0;top:92px;width:265px;bottom:0;background:#16213e;
-  border-left:1px solid #0f3460;padding:14px;overflow-y:auto;z-index:99;display:none}}
-#inf h3{{font-size:11px;color:#888;margin-bottom:9px;text-transform:uppercase}}
-.pr{{display:flex;gap:6px;margin:3px 0;font-size:11px}}
-.pk{{color:#888;min-width:90px}}.pv{{color:#ccc;word-break:break-all}}
-#vc{{position:fixed;top:92px;left:0;right:0;bottom:0}}
-#st{{position:fixed;bottom:16px;right:16px;background:rgba(15,52,96,.9);
-  padding:6px 13px;border-radius:4px;font-size:11px;color:#aaa;z-index:99}}
-#ov{{position:fixed;inset:0;background:#1a1a2e;display:flex;flex-direction:column;
-  align-items:center;justify-content:center;z-index:1000}}
-.sp{{width:44px;height:44px;border:4px solid #0f3460;border-top-color:#e94560;
-  border-radius:50%;animation:spin 1s linear infinite;margin-bottom:16px}}
-@keyframes spin{{to{{transform:rotate(360deg)}}}}
-#pg{{font-size:13px;color:#888;margin-top:6px}}
-</style></head><body>
-<div id=""ov"">
-  <div class=""sp""></div>
-  <div style=""font-size:17px;color:#ccc"">Cargando modelo BIM...</div>
-  <div id=""pg"">Iniciando viewer...</div>
-</div>
-<div id=""hdr""><h1>📐 Viewer BIM Estructural</h1><span>— {titulo}</span></div>
-<div id=""tb"">
-  <button class=""btn"" id=""bCar"">📂 Cargar IFC</button>
-  <button class=""btn"" id=""bMed"">📏 Medir</button>
-  <button class=""btn"" id=""bSec"">✂️ Sección</button>
-  <button class=""btn"" id=""bRes"">🔄 Reset</button>
-  <button class=""btn"" id=""bInf"">ℹ️ Props</button>
-  <span style=""margin-left:auto;font-size:10px;color:#555"">Clic=propiedades | ESC=limpiar</span>
-</div>
-<div id=""vc""><canvas id=""cv"" style=""width:100%;height:100%""></canvas></div>
-<div id=""leg"">
-  <h3>Leyenda de Cambios</h3>
-  <div class=""li""><div class=""dot"" style=""background:#00C850""></div>Nuevos</div>
-  <div class=""li""><div class=""dot"" style=""background:#FFC800""></div>Modificados</div>
-  <div class=""li""><div class=""dot"" style=""background:#DC3232""></div>Eliminados</div>
-  <div class=""li""><div class=""dot"" style=""background:#607080""></div>Sin cambios</div>
-</div>
-<div id=""inf""><h3>Propiedades del Elemento</h3>
-  <div id=""pc""><p style=""color:#555;font-size:11px"">Haz clic en un elemento.</p></div>
-</div>
-<div id=""st"">Listo — {nomIFC}</div>
-<script type=""module"">
-import {{IfcViewerAPI}} from 'https://unpkg.com/web-ifc-viewer@1.0.221/dist/web-ifc-viewer.js';
-const vc=document.getElementById('cv').parentElement,ov=document.getElementById('ov');
-const pg=document.getElementById('pg'),st=document.getElementById('st');
-const inf=document.getElementById('inf'),pc=document.getElementById('pc');
-const viewer=new IfcViewerAPI({{container:vc,backgroundColor:new THREE.Color(0x1a1a2e)}});
-viewer.grid.setGrid();viewer.axes.setAxes();
-let mMed=false,mSec=false;
-async function auto(){{
-  try{{
-    pg.textContent='Cargando {nomIFC}...';
-    const m=await viewer.IFC.loadIfcUrl('./{nomIFC}',true,p=>pg.textContent=Math.round(p*100)+'%');
-    ov.style.display='none';st.textContent='Modelo cargado ✓';
-    try{{viewer.shadowDropper.renderShadow(m.modelID);}}catch{{}}
-  }}catch(e){{pg.textContent='Usa 📂 Cargar IFC para abrir manualmente';setTimeout(()=>ov.style.display='none',3000)}}
-}}
-auto();
-document.getElementById('bCar').onclick=()=>{{
-  const inp=document.createElement('input');inp.type='file';inp.accept='.ifc';
-  inp.onchange=async e=>{{
-    const f=e.target.files[0];if(!f)return;
-    ov.style.display='flex';pg.textContent='Cargando '+f.name+'...';
-    try{{
-      const m=await viewer.IFC.loadIfcUrl(URL.createObjectURL(f),true,p=>pg.textContent=Math.round(p*100)+'%');
-      ov.style.display='none';st.textContent=f.name+' ✓';
-      try{{viewer.shadowDropper.renderShadow(m.modelID);}}catch{{}}
-    }}catch(err){{ov.style.display='none';st.textContent='Error: '+err.message}}
-  }};inp.click();
-}};
-document.getElementById('bMed').onclick=()=>{{
-  mMed=!mMed;document.getElementById('bMed').classList.toggle('on',mMed);
-  viewer.dimensions.active=mMed;viewer.dimensions.previewActive=mMed;
-  st.textContent=mMed?'📏 Clic en 2 puntos para medir | ESC para borrar':'Medición desactivada';
-}};
-document.getElementById('bSec').onclick=()=>{{
-  mSec=!mSec;document.getElementById('bSec').classList.toggle('on',mSec);
-  viewer.clipper.active=mSec;
-  if(!mSec)viewer.clipper.deleteAllPlanes();
-  st.textContent=mSec?'✂️ Doble clic en el modelo para crear plano de corte':'Sección desactivada';
-}};
-document.getElementById('bRes').onclick=()=>{{
-  viewer.context.resetCamera();viewer.IFC.unpickIfcItems();st.textContent='Vista reiniciada';
-}};
-document.getElementById('bInf').onclick=()=>{{
-  const ab=inf.style.display==='block';
-  inf.style.display=ab?'none':'block';
-  document.getElementById('vc').style.right=ab?'0':'265px';
-}};
-window.addEventListener('click',async()=>{{
-  if(mMed){{viewer.dimensions.create();return}}
-  if(mSec){{viewer.clipper.createPlane();return}}
-  const r=await viewer.IFC.selector.pickIfcItem(true);
-  if(!r)return;
-  try{{
-    const props=await viewer.IFC.getProperties(r.modelID,r.id,true,false);
-    let h='';
-    for(const[k,v]of Object.entries(props)){{
-      const val=typeof v==='object'&&v!==null?v.value??'—':v;
-      if(typeof val!=='object')h+=`<div class=""pr""><span class=""pk"">${{k}}</span><span class=""pv"">${{val}}</span></div>`;
-    }}
-    pc.innerHTML=h||'<p style=""color:#555"">Sin propiedades</p>';
-    inf.style.display='block';document.getElementById('vc').style.right='265px';
-    st.textContent='Seleccionado ID: '+r.id;
-  }}catch{{st.textContent='Sin propiedades disponibles para este elemento'}}
-}});
-window.addEventListener('dblclick',()=>{{if(mMed)viewer.dimensions.create();}});
-window.addEventListener('keydown',e=>{{
-  if(e.key==='Escape'){{viewer.IFC.selector.unpickIfcItems();viewer.dimensions.deleteAll();}}
-}});
-</script></body></html>";
-
-        string Instrucciones(string t) =>
-$@"VIEWER BIM ESTRUCTURAL — {t}
-Generado: {DateTime.Now:dd/MM/yyyy HH:mm}
-Usuario:  {Environment.UserName}
-
-ABRIR:
-  1. NO separar los archivos de esta carpeta
-  2. Doble clic en viewer.html (Chrome o Edge)
-  3. Si no carga automatico: boton [📂 Cargar IFC]
-
-HERRAMIENTAS:
-  📏 Medir   — Activar boton, clic punto 1, clic punto 2, ESC para borrar
-  ✂️ Seccion — Activar boton, doble clic en el modelo
-  ℹ️ Props   — Activar boton, clic en cualquier elemento
-  🔄 Reset   — Restaura la vista original
-
-LEYENDA DE COLORES:
-  Verde    = Elementos NUEVOS en esta version
-  Amarillo = Elementos MODIFICADOS
-  Rojo     = Elementos ELIMINADOS (referencia)
-  Gris     = Sin cambios
-
-REQUISITO: Chrome o Edge actualizado. Sin instalacion adicional.";
-    }
-
-    // ═══════════════════════════════════════════════════════
-    //  UI — VENTANA SAT
-    // ═══════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════
+    //  VENTANA SAT
+    // ════════════════════════════════════════════════════════
     internal class VentanaSAT : System.Windows.Forms.Form
     {
         public bool         UsarSeleccion { get; private set; }
         public List<string> Niveles       { get; private set; } = new List<string>();
-
+        public string       RutaExportacion { get; private set; }
         RadioButton rbSel, rbTodo, rbNiv;
         CheckedListBox clb;
 
         public VentanaSAT(Document doc)
         {
-            Text = "Exportar SAT — BIM Estructural";
-            Size = new WinSize(430, 415); StartPosition = FormStartPosition.CenterScreen;
+            Text = "Exportar SAT"; Size = new WinSize(468, 580);
+            StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
-            BackColor = WinColor.FromArgb(26, 26, 46); ForeColor = WinColor.FromArgb(220, 220, 220);
+            BackColor = Esti.FondoOscuro; ForeColor = Esti.TextoPrincipal;
+            Controls.Add(Esti.HeaderLogo(468));
+            Controls.Add(Esti.Titulo("EXPORTAR SOLIDO SAT", 16, 80));
+            Controls.Add(Esti.Lbl("Geometria unificada con rotacion -90 para SolidWorks.", 16, 108));
+            Controls.Add(Esti.Sep(132));
+            
+            Controls.Add(Esti.Lbl("Carpeta de exportacion:", 16, 142));
+            var txtRuta = new System.Windows.Forms.TextBox { Location = new WinPoint(16, 164), Size = new WinSize(390, 24), Font = Esti.FNormal, ReadOnly = true };
+            txtRuta.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Exportacion_SAT");
+            var btnRuta = new WinButton { Text = "...", Location = new WinPoint(412, 163), Size = new WinSize(36, 25), Font = Esti.FBold, BackColor = Esti.ColGris, ForeColor = WinColor.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            btnRuta.FlatAppearance.BorderSize = 0;
+            btnRuta.Click += (s, e) => {
+                using (var fbd = new FolderBrowserDialog { Description = "Carpeta de Exportacion SAT" }) {
+                    if (fbd.ShowDialog() == DialogResult.OK) txtRuta.Text = fbd.SelectedPath;
+                }
+            };
+            Controls.AddRange(new System.Windows.Forms.Control[] { txtRuta, btnRuta });
 
-            Controls.Add(new WinLabel { Text = "📐  EXPORTAR SÓLIDO SAT — SolidWorks", Location = new WinPoint(15, 14), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold), ForeColor = WinColor.FromArgb(100, 180, 255) });
-            Controls.Add(new WinLabel { Text = "Alcance de exportación:", Location = new WinPoint(15, 44), AutoSize = true, Font = new Font("Segoe UI", 9), ForeColor = WinColor.FromArgb(155, 155, 155) });
-
-            rbSel  = new RadioButton { Text = "Usar selección activa en Revit",  Location = new WinPoint(20, 68),  AutoSize = true, Checked = true, ForeColor = WinColor.FromArgb(200, 200, 200), Font = new Font("Segoe UI", 9) };
-            rbTodo = new RadioButton { Text = "Todo el modelo estructural",       Location = new WinPoint(20, 92),  AutoSize = true, ForeColor = WinColor.FromArgb(200, 200, 200), Font = new Font("Segoe UI", 9) };
-            rbNiv  = new RadioButton { Text = "Solo niveles específicos:",        Location = new WinPoint(20, 116), AutoSize = true, ForeColor = WinColor.FromArgb(200, 200, 200), Font = new Font("Segoe UI", 9) };
+            Controls.Add(Esti.Lbl("Alcance:", 16, 202));
+            rbSel  = RB("Usar seleccion activa", 16, 224, true);
+            rbTodo = RB("Todo el modelo estructural", 16, 248);
+            rbNiv  = RB("Filtrar por niveles:", 16, 272);
             rbNiv.CheckedChanged += (s, e) => clb.Enabled = rbNiv.Checked;
-
             clb = new CheckedListBox
             {
-                Location = new WinPoint(38, 142), Size = new WinSize(360, 145), Enabled = false,
-                BackColor = WinColor.FromArgb(22, 33, 62), ForeColor = WinColor.FromArgb(200, 200, 200),
-                Font = new Font("Segoe UI", 9), BorderStyle = BorderStyle.FixedSingle
+                Location = new WinPoint(32, 296), Size = new WinSize(400, 130),
+                Enabled = false, BackColor = Esti.FondoMedio,
+                ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BorderStyle = BorderStyle.None
             };
-            foreach (Level lv in new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().OrderBy(l => l.Elevation))
+            foreach (Level lv in new FilteredElementCollector(doc).OfClass(typeof(Level))
+                .Cast<Level>().OrderBy(l => l.Elevation))
                 clb.Items.Add(lv.Name);
-
-            var pI = new WinPanel { Location = new WinPoint(15, 298), Size = new WinSize(390, 50), BackColor = WinColor.FromArgb(15, 52, 96) };
-            pI.Controls.Add(new WinLabel
-            {
-                Text = "ℹ️  Sólidos en vista 'EXPORTACION_SAT', rotados -90° en X para SolidWorks.\n   Exporta: Archivo → Exportar → CAD → SAT",
-                Location = new WinPoint(8, 8), AutoSize = true, Font = new Font("Segoe UI", 8), ForeColor = WinColor.FromArgb(140, 180, 220)
-            });
-            Controls.Add(pI);
-
-            var bOK  = new System.Windows.Forms.Button { Text = "✅  Exportar", Location = new WinPoint(228, 360), Size = new WinSize(92, 28), BackColor = WinColor.FromArgb(0, 120, 60),  ForeColor = WinColor.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 8, FontStyle.Bold) };
-            var bCan = new System.Windows.Forms.Button { Text = "Cancelar",    Location = new WinPoint(328, 360), Size = new WinSize(82, 28), BackColor = WinColor.FromArgb(70, 30, 30), ForeColor = WinColor.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 8), DialogResult = DialogResult.Cancel };
+            Controls.Add(Esti.Sep(436));
+            Controls.Add(Esti.PanelInfo(
+                "Exportacion SAT automatica a la ruta indicada tras generar vista.",
+                446, Esti.Acento, 40));
+            var bOK  = Esti.Btn("Exportar", Esti.Acento,  244, 496, 130, 32);
+            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 382, 496,  72, 32);
             bOK.Click += (s, e) =>
             {
                 UsarSeleccion = rbSel.Checked;
                 if (rbNiv.Checked) Niveles = clb.CheckedItems.Cast<string>().ToList();
+                RutaExportacion = txtRuta.Text;
                 DialogResult = DialogResult.OK; Close();
             };
-
+            bCan.DialogResult = DialogResult.Cancel;
             Controls.AddRange(new System.Windows.Forms.Control[] { rbSel, rbTodo, rbNiv, clb, bOK, bCan });
             AcceptButton = bOK; CancelButton = bCan;
         }
+
+        RadioButton RB(string t, int x, int y, bool ch = false) => new RadioButton
+        {
+            Text = t, Location = new WinPoint(x, y), AutoSize = true, Checked = ch,
+            ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BackColor = WinColor.Transparent
+        };
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  UI — VENTANA COMPARAR (con lógica OLD/NEW explicada)
-    // ═══════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════
+    //  VENTANA COMPARAR
+    // ════════════════════════════════════════════════════════
     internal class VentanaComparar : System.Windows.Forms.Form
     {
         public AccionComp Op { get; private set; }
+        public string RutaElegida { get; private set; }
 
-        public VentanaComparar(bool hayOLD, string rutaOLD)
+        public VentanaComparar(string regActual, Func<string, string> funcBuscarOLD)
         {
-            Text = "Comparar Versiones — BIM Estructural";
-            Size = new WinSize(460, 370); StartPosition = FormStartPosition.CenterScreen;
+            Text = "Comparar Versiones"; Size = new WinSize(468, 540);
+            StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
-            BackColor = WinColor.FromArgb(26, 26, 46); ForeColor = WinColor.FromArgb(220, 220, 220);
+            BackColor = Esti.FondoOscuro; ForeColor = Esti.TextoPrincipal;
+            Controls.Add(Esti.HeaderLogo(468));
+            Controls.Add(Esti.Titulo("COMPARADOR DE VERSIONES", 16, 80));
+            Controls.Add(Esti.Lbl("Registro OLD/NEW con reporte Gemini AI y vista limpia.", 16, 108));
+            Controls.Add(Esti.Sep(132));
 
-            Controls.Add(new WinLabel { Text = "📊  COMPARADOR DE VERSIONES — REGISTRO AUDITORÍA", Location = new WinPoint(15, 14), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold), ForeColor = WinColor.FromArgb(100, 180, 255) });
+            Controls.Add(Esti.Lbl("Carpeta de registro de modelos:", 16, 142));
+            var txtRuta = new System.Windows.Forms.TextBox { Location = new WinPoint(16, 164), Size = new WinSize(390, 24), Font = Esti.FNormal, ReadOnly = true };
+            txtRuta.Text = regActual;
+            RutaElegida = regActual;
+            var btnRuta = new WinButton { Text = "...", Location = new WinPoint(412, 163), Size = new WinSize(36, 25), Font = Esti.FBold, BackColor = Esti.ColGris, ForeColor = WinColor.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            btnRuta.FlatAppearance.BorderSize = 0;
+            Controls.AddRange(new System.Windows.Forms.Control[] { txtRuta, btnRuta });
 
-            // Estado del OLD
-            string estadoTxt = hayOLD
-                ? $"✅  Versión OLD encontrada:\n   {rutaOLD}"
-                : "⚠️  Sin versión OLD — guarda una primero";
-            Controls.Add(new WinLabel
-            {
-                Text = estadoTxt, Location = new WinPoint(15, 46), AutoSize = true,
-                Font = new Font("Segoe UI", 8.5f),
-                ForeColor = hayOLD ? WinColor.FromArgb(0, 200, 100) : WinColor.FromArgb(255, 180, 0)
-            });
+            var lblEst = Esti.Lbl("", 16, 202);
+            Controls.Add(lblEst);
 
-            // Explicación del flujo
-            var pFlujo = new WinPanel { Location = new WinPoint(15, 88), Size = new WinSize(425, 38), BackColor = WinColor.FromArgb(10, 25, 50) };
-            pFlujo.Controls.Add(new WinLabel
-            {
-                Text = "Flujo:  [1° semana → Guardar OLD]   →   [Hacer cambios en Revit]   →   [Comparar y generar NEW]",
-                Location = new WinPoint(8, 10), AutoSize = true, Font = new Font("Segoe UI", 8), ForeColor = WinColor.FromArgb(130, 170, 210)
-            });
-            Controls.Add(pFlujo);
+            Controls.Add(Esti.PanelInfo(
+                "Flujo:  [Guardar OLD]  >  [Cambios en Revit]  >  [Comparar y generar NEW]",
+                224, Esti.Acento, 34));
+            
+            var bG = Esti.BtnGrande("Guardar version OLD\n    Exporta IFC + estado actual como linea base", 270);
+            var bC = Esti.BtnGrande(
+                "Comparar con OLD y generar NEW\n    Colorea + vista limpia + reporte IA + auditoria",
+                334, false, Esti.FondoPanel);
+            var bL = Esti.BtnGrande("Limpiar colores de la vista activa", 398, true, Esti.ColGris);
 
-            // Botones de acción
-            BtnGrande("💾  Guardar versión OLD (línea base)\n    Exporta IFC + hashes del estado actual para referencia futura",
-                136, WinColor.FromArgb(15, 52, 96), true,
-                () => { Op = AccionComp.GuardarOLD; DialogResult = DialogResult.OK; Close(); });
-
-            BtnGrande("🔍  Comparar con OLD y generar NEW\n    Colorea cambios en vista + exporta IFC NEW + genera CSV de auditoría",
-                204, hayOLD ? WinColor.FromArgb(0, 70, 35) : WinColor.FromArgb(35, 35, 35), hayOLD,
-                () => { Op = AccionComp.CompararYGenerar; DialogResult = DialogResult.OK; Close(); });
-
-            BtnGrande("🧹  Limpiar colores de la vista activa",
-                272, WinColor.FromArgb(55, 22, 22), true,
-                () => { Op = AccionComp.Limpiar; DialogResult = DialogResult.OK; Close(); });
-
-            var bCan = new System.Windows.Forms.Button { Text = "Cancelar", Location = new WinPoint(360, 315), Size = new WinSize(80, 26), BackColor = WinColor.FromArgb(50, 50, 60), ForeColor = WinColor.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 8), DialogResult = DialogResult.Cancel };
-            Controls.Add(bCan); CancelButton = bCan;
-        }
-
-        void BtnGrande(string txt, int y, WinColor bg, bool en, Action fn)
-        {
-            var b = new System.Windows.Forms.Button
-            {
-                Text = txt, Location = new WinPoint(15, y), Size = new WinSize(425, 54),
-                BackColor = bg, ForeColor = en ? WinColor.White : WinColor.FromArgb(65, 65, 65),
-                FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9),
-                TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0), Enabled = en
+            Action actualizarEstado = () => {
+                string rOld = funcBuscarOLD(txtRuta.Text);
+                bool hay = (rOld != null);
+                lblEst.Text = hay ? "Version OLD encontrada: " + Path.GetFileName(Path.GetDirectoryName(rOld))
+                                  : "Sin version OLD — guarda una antes de comparar";
+                lblEst.ForeColor = hay ? Esti.ColVerde : Esti.ColAmarillo;
+                bC.Enabled = hay;
+                bC.FlatAppearance.BorderColor = hay ? Esti.Acento : Esti.ColGris;
+                bC.ForeColor = hay ? Esti.TextoPrincipal : Esti.TextoSecundario;
             };
-            b.Click += (s, e) => fn();
-            Controls.Add(b);
+
+            actualizarEstado();
+
+            btnRuta.Click += (s, e) => {
+                using (var fbd = new FolderBrowserDialog { Description = "Carpeta de Registro BIM", SelectedPath = txtRuta.Text }) {
+                    if (fbd.ShowDialog() == DialogResult.OK) {
+                        txtRuta.Text = fbd.SelectedPath;
+                        RutaElegida = fbd.SelectedPath;
+                        actualizarEstado();
+                    }
+                }
+            };
+
+            bG.Click += (s, e) => { Op = AccionComp.GuardarOLD;       DialogResult = DialogResult.OK; Close(); };
+            bC.Click += (s, e) => { Op = AccionComp.CompararYGenerar; DialogResult = DialogResult.OK; Close(); };
+            bL.Click += (s, e) => { Op = AccionComp.Limpiar;          DialogResult = DialogResult.OK; Close(); };
+            Controls.Add(Esti.Sep(460));
+            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 384, 468, 70, 28);
+            bCan.DialogResult = DialogResult.Cancel;
+            Controls.AddRange(new System.Windows.Forms.Control[] { bG, bC, bL, bCan });
+            CancelButton = bCan;
         }
     }
 
-    // ═══════════════════════════════════════════════════════
-    //  UI — VENTANA VIEWER
-    // ═══════════════════════════════════════════════════════
-    internal class VentanaViewer : System.Windows.Forms.Form
+    // ════════════════════════════════════════════════════════
+    //  CMD 3 — CORTE JERARQUICO
+    // ════════════════════════════════════════════════════════
+    internal enum AlcanceCorte { VistaActiva, TodoElModelo }
+
+    [Transaction(TransactionMode.Manual)]
+    public class CmdCorteJerarquico : IExternalCommand
     {
-        public string CarpetaSalida { get; private set; }
-        System.Windows.Forms.TextBox tx;
-
-        public VentanaViewer(Document doc)
+        // Jerarquia: mayor prioridad corta a menor.
+        // 0=Suelos/Losas, 1=Pilares/Columnas, 2=Vigas/Armazones,
+        // 3=Muros, 4=Cubiertas, 5=Cimentaciones, 6=Escaleras/Rampas/Varios
+        static readonly List<BuiltInCategory>[] Jerarquia = new[]
         {
-            Text = "Generar Viewer — BIM Estructural";
-            Size = new WinSize(450, 355); StartPosition = FormStartPosition.CenterScreen;
+            new List<BuiltInCategory> { BuiltInCategory.OST_Floors },
+            new List<BuiltInCategory> { BuiltInCategory.OST_StructuralColumns, BuiltInCategory.OST_Columns },
+            new List<BuiltInCategory> { BuiltInCategory.OST_StructuralFraming, BuiltInCategory.OST_StructuralTruss },
+            new List<BuiltInCategory> { BuiltInCategory.OST_Walls },
+            new List<BuiltInCategory> { BuiltInCategory.OST_Roofs },
+            new List<BuiltInCategory> { BuiltInCategory.OST_StructuralFoundation, BuiltInCategory.OST_StructConnections },
+            new List<BuiltInCategory> { BuiltInCategory.OST_Stairs, BuiltInCategory.OST_Ramps, BuiltInCategory.OST_GenericModel },
+        };
+        static readonly string[] NombresNivel =
+        {
+            "Suelos / Losas",
+            "Pilares / Columnas",
+            "Vigas / Armazones",
+            "Muros",
+            "Cubiertas",
+            "Cimentaciones / Conexiones",
+            "Escaleras / Rampas / Varios",
+        };
+
+        public Result Execute(ExternalCommandData data, ref string msg, ElementSet es)
+        {
+            var uidoc = data.Application.ActiveUIDocument;
+            var doc   = uidoc.Document;
+            using (var dlg = new VentanaCorte())
+            {
+                if (dlg.ShowDialog() != DialogResult.OK) return Result.Cancelled;
+                var niveles    = dlg.NivelesActivos;   // bool[7]
+                var alcance    = dlg.Alcance;
+                bool autoSwitch = dlg.AutoSwitch;
+
+                // Recolectar grupos segun alcance
+                Func<List<BuiltInCategory>, List<Element>> Colectar = cats =>
+                {
+                    var f = new ElementMulticategoryFilter(cats);
+                    var col = alcance == AlcanceCorte.VistaActiva
+                        ? new FilteredElementCollector(doc, doc.ActiveView.Id)
+                        : new FilteredElementCollector(doc);
+                    return col.WherePasses(f).WhereElementIsNotElementType().ToList();
+                };
+
+                var grupos = new List<Element>[Jerarquia.Length];
+                for (int i = 0; i < Jerarquia.Length; i++)
+                    grupos[i] = niveles[i] ? Colectar(Jerarquia[i]) : new List<Element>();
+
+                int total = 0;
+                using (var t = new Transaction(doc, "Corte Geometrico Jerarquico"))
+                {
+                    t.Start();
+                    // Ejecutar jerarquia: nivel i corta a todos los niveles j > i
+                    for (int i = 0; i < grupos.Length; i++)
+                    {
+                        if (!niveles[i] || grupos[i].Count == 0) continue;
+                        for (int j = i; j < grupos.Length; j++)
+                        {
+                            if (!niveles[j] || grupos[j].Count == 0) continue;
+                            foreach (var dom in grupos[i])
+                                total += UnirGrupo(doc, dom, grupos[j], autoSwitch);
+                        }
+                    }
+                    t.Commit();
+                }
+
+                TaskDlg.Show("Corte Geometrico",
+                    "Corte jerarquico completado.\n" +
+                    "Uniones procesadas: " + total + "\n" +
+                    "Alcance: " + (alcance == AlcanceCorte.VistaActiva ? "Vista activa" : "Todo el modelo"));
+            }
+            return Result.Succeeded;
+        }
+
+        static int UnirGrupo(Document doc, Element dom, List<Element> subs, bool autoSwitch)
+        {
+            var bb = dom.get_BoundingBox(null);
+            if (bb == null) return 0;
+            // Expand bounding box slightly to catch touching elements
+            double tol = 0.05;
+            var min = new XYZ(bb.Min.X - tol, bb.Min.Y - tol, bb.Min.Z - tol);
+            var max = new XYZ(bb.Max.X + tol, bb.Max.Y + tol, bb.Max.Z + tol);
+            var bbf = new BoundingBoxIntersectsFilter(new Outline(min, max));
+            int cnt = 0;
+            foreach (var sub in subs)
+            {
+                if (dom.Id == sub.Id) continue;
+                if (!bbf.PassesFilter(sub)) continue;
+                try
+                {
+                    if (!JoinGeometryUtils.AreElementsJoined(doc, dom, sub))
+                        JoinGeometryUtils.JoinGeometry(doc, dom, sub);
+                    if (autoSwitch && !JoinGeometryUtils.IsCuttingElementInJoin(doc, dom, sub))
+                        JoinGeometryUtils.SwitchJoinOrder(doc, dom, sub);
+                    cnt++;
+                }
+                catch { }
+            }
+            return cnt;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  VENTANA CORTE JERARQUICO
+    // ════════════════════════════════════════════════════════
+    internal class VentanaCorte : System.Windows.Forms.Form
+    {
+        static readonly string[] NombresNivel =
+        {
+            "Suelos / Losas",
+            "Pilares / Columnas",
+            "Vigas / Armazones",
+            "Muros",
+            "Cubiertas",
+            "Cimentaciones / Conexiones",
+            "Escaleras / Rampas / Varios",
+        };
+
+        public bool[]       NivelesActivos { get; private set; } = new bool[7];
+        public AlcanceCorte Alcance        { get; private set; } = AlcanceCorte.VistaActiva;
+        public bool         AutoSwitch     { get; private set; } = true;
+
+        RadioButton rbVista, rbTodo;
+        CheckBox[]  chks = new CheckBox[7];
+        CheckBox    chkSwitch;
+
+        public VentanaCorte()
+        {
+            Text = "Corte Geometrico"; Size = new WinSize(468, 660);
+            StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
-            BackColor = WinColor.FromArgb(26, 26, 46); ForeColor = WinColor.FromArgb(220, 220, 220);
+            BackColor = Esti.FondoOscuro; ForeColor = Esti.TextoPrincipal;
+            Controls.Add(Esti.HeaderLogo(468));
 
-            Controls.Add(new WinLabel { Text = "🌐  GENERAR VIEWER PARA OBRA", Location = new WinPoint(15, 14), AutoSize = true, Font = new Font("Segoe UI", 10, FontStyle.Bold), ForeColor = WinColor.FromArgb(100, 180, 255) });
+            // ── Titulo ─────────────────────────────────────────
+            Controls.Add(Esti.Titulo("CORTE GEOMETRICO JERARQUICO", 16, 80));
+            Controls.Add(Esti.Lbl("Une y corta elementos estructurales segun su jerarquia.", 16, 108));
+            Controls.Add(Esti.Sep(130));
 
-            var pI = new WinPanel { Location = new WinPoint(15, 46), Size = new WinSize(412, 82), BackColor = WinColor.FromArgb(15, 52, 96) };
-            pI.Controls.Add(new WinLabel
-            {
-                Text = "Genera en la carpeta seleccionada:\n\n  📄  IFC con colores de cambios aplicados\n  🌐  viewer.html — Chrome/Edge, sin instalación\n  📋  INSTRUCCIONES.txt para el equipo en obra",
-                Location = new WinPoint(10, 8), AutoSize = true, Font = new Font("Segoe UI", 8.5f), ForeColor = WinColor.FromArgb(160, 200, 240)
-            });
-            Controls.Add(pI);
+            // ── Alcance ────────────────────────────────────────
+            Controls.Add(Esti.Lbl("Alcance:", 16, 142));
+            rbVista = new RadioButton { Text = "Solo vista activa (mas rapido)",
+                Location = new WinPoint(16, 164), AutoSize = true, Checked = true,
+                ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BackColor = WinColor.Transparent };
+            rbTodo  = new RadioButton { Text = "Todo el modelo",
+                Location = new WinPoint(16, 188), AutoSize = true,
+                ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BackColor = WinColor.Transparent };
+            Controls.AddRange(new System.Windows.Forms.Control[] { rbVista, rbTodo });
+            Controls.Add(Esti.Sep(212));
 
-            Controls.Add(new WinLabel { Text = "Carpeta de salida:", Location = new WinPoint(15, 144), AutoSize = true, Font = new Font("Segoe UI", 9, FontStyle.Bold) });
-
-            string def = string.IsNullOrEmpty(doc.PathName)
-                ? Environment.GetFolderPath(Environment.SpecialFolder.Desktop)
-                : Path.GetDirectoryName(doc.PathName);
-
-            tx = new System.Windows.Forms.TextBox
-            {
-                Text = def, Location = new WinPoint(15, 165), Size = new WinSize(318, 24),
-                BackColor = WinColor.FromArgb(22, 33, 62), ForeColor = WinColor.FromArgb(200, 200, 200),
-                Font = new Font("Segoe UI", 8.5f), BorderStyle = BorderStyle.FixedSingle
+            // ── Niveles jerarquicos ────────────────────────────
+            Controls.Add(Esti.Lbl("Niveles a procesar (de mayor a menor jerarquia):", 16, 224));
+            // Columores para cada nivel (arcoiris suave)
+            WinColor[] colores = {
+                WinColor.FromArgb(22,160,230),  // azul  — Suelos
+                WinColor.FromArgb(39,201,111),  // verde — Pilares
+                WinColor.FromArgb(255,196,0),   // amarillo — Vigas
+                WinColor.FromArgb(255,138,60),  // naranja — Muros
+                WinColor.FromArgb(229,57,53),   // rojo — Cubiertas
+                WinColor.FromArgb(156,39,176),  // morado — Cimentacion
+                WinColor.FromArgb(100,110,120), // gris — Varios
             };
-            Controls.Add(tx);
-
-            var bEx = new System.Windows.Forms.Button { Text = "📁 Examinar", Location = new WinPoint(340, 163), Size = new WinSize(88, 28), BackColor = WinColor.FromArgb(15, 52, 96), ForeColor = WinColor.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 8) };
-            bEx.Click += (s, e) =>
+            for (int i = 0; i < 7; i++)
             {
-                using (var fbd = new FolderBrowserDialog { SelectedPath = tx.Text, Description = "Selecciona la carpeta donde se guardará el viewer" })
-                    if (fbd.ShowDialog() == DialogResult.OK) tx.Text = fbd.SelectedPath;
+                int y = 248 + i * 30;
+                // Indicador de color de nivel
+                var dot = new WinPanel { Location = new WinPoint(20, y + 4),
+                    Size = new WinSize(12, 12), BackColor = colores[i] };
+                dot.Paint += (s, e) => {};
+                var ck = new CheckBox { Text = (i + 1) + ". " + NombresNivel[i],
+                    Location = new WinPoint(40, y), AutoSize = true, Checked = true,
+                    ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BackColor = WinColor.Transparent };
+                Controls.Add(dot);
+                Controls.Add(ck);
+                chks[i] = ck;
+            }
+
+            // Boton seleccionar / deseleccionar todo
+            var bAll = new WinButton { Text = "Todos",
+                Location = new WinPoint(16, 462), Size = new WinSize(70, 24),
+                Font = Esti.FPeque, BackColor = Esti.Acento, ForeColor = WinColor.White,
+                FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            bAll.FlatAppearance.BorderSize = 0;
+            bAll.Click += (s, e) => { foreach (var c in chks) c.Checked = true; };
+            var bNone = new WinButton { Text = "Ninguno",
+                Location = new WinPoint(92, 462), Size = new WinSize(70, 24),
+                Font = Esti.FPeque, BackColor = Esti.ColGris, ForeColor = WinColor.White,
+                FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            bNone.FlatAppearance.BorderSize = 0;
+            bNone.Click += (s, e) => { foreach (var c in chks) c.Checked = false; };
+            Controls.AddRange(new System.Windows.Forms.Control[] { bAll, bNone });
+
+            Controls.Add(Esti.Sep(492));
+
+            // ── Opciones ───────────────────────────────────────
+            chkSwitch = new CheckBox { Text = "Corregir orden de corte automaticamente (SwitchJoinOrder)",
+                Location = new WinPoint(16, 504), AutoSize = true, Checked = true,
+                ForeColor = Esti.TextoSecundario, Font = Esti.FPeque, BackColor = WinColor.Transparent };
+            Controls.Add(chkSwitch);
+
+            // Info
+            Controls.Add(Esti.PanelInfo(
+                "El elemento de mayor jerarquia corta al de menor. Usa BoundingBox para optimizar rendimiento.",
+                524, Esti.Acento, 36));
+
+            // ── Botones ────────────────────────────────────────
+            var bOK  = Esti.Btn("Ejecutar", Esti.Acento,  230, 568, 130, 32);
+            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 368, 568,  82, 32);
+            bOK.Click += (s, e) =>
+            {
+                Alcance    = rbVista.Checked ? AlcanceCorte.VistaActiva : AlcanceCorte.TodoElModelo;
+                AutoSwitch = chkSwitch.Checked;
+                for (int i = 0; i < 7; i++) NivelesActivos[i] = chks[i].Checked;
+                DialogResult = DialogResult.OK; Close();
             };
-            Controls.Add(bEx);
-
-            var pAdv = new WinPanel { Location = new WinPoint(15, 202), Size = new WinSize(412, 50), BackColor = WinColor.FromArgb(50, 38, 8) };
-            pAdv.Controls.Add(new WinLabel { Text = "⚠️  Aplica primero 'Comparar Versiones' para colorear los cambios.\n    El viewer exporta exactamente lo visible en la vista activa.", Location = new WinPoint(8, 7), AutoSize = true, Font = new Font("Segoe UI", 8), ForeColor = WinColor.FromArgb(255, 200, 100) });
-            Controls.Add(pAdv);
-
-            var bOK  = new System.Windows.Forms.Button { Text = "🚀  Generar Viewer", Location = new WinPoint(240, 278), Size = new WinSize(118, 30), BackColor = WinColor.FromArgb(0, 120, 60), ForeColor = WinColor.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
-            var bCan = new System.Windows.Forms.Button { Text = "Cancelar",          Location = new WinPoint(366, 278), Size = new WinSize(68,  30), BackColor = WinColor.FromArgb(50, 50, 60), ForeColor = WinColor.White, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 8), DialogResult = DialogResult.Cancel };
-            bOK.Click += (s, e) => { CarpetaSalida = tx.Text; DialogResult = DialogResult.OK; Close(); };
+            bCan.DialogResult = DialogResult.Cancel;
             Controls.AddRange(new System.Windows.Forms.Control[] { bOK, bCan });
             AcceptButton = bOK; CancelButton = bCan;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  CMD 4 — VISTA COMPARTIDA (Revit Shared Views)
+    // ════════════════════════════════════════════════════════
+    [Transaction(TransactionMode.Manual)]
+    public class CmdCompartirVista : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string msg, ElementSet es)
+        {
+            var uidoc = data.Application.ActiveUIDocument;
+
+            // Intentar ejecutar el comando interno de Revit "Shared Views"
+            try
+            {
+                RevitCommandId cmdId = RevitCommandId.LookupPostableCommandId(
+                    PostableCommand.SharedViews);
+                if (cmdId != null && uidoc.Application.CanPostCommand(cmdId))
+                {
+                    uidoc.Application.PostCommand(cmdId);
+                    return Result.Succeeded;
+                }
+            }
+            catch { }
+
+            // Fallback: abrir viewer.autodesk.com e instrucciones
+            try { System.Diagnostics.Process.Start("https://viewer.autodesk.com"); } catch { }
+
+            TaskDlg.Show("Vista Compartida",
+                "Para compartir el modelo online sin exportar:\n\n" +
+                "  Revit > Colaborar > Vistas Compartidas\n\n" +
+                "Genera un link directo que el equipo de obra\n" +
+                "puede abrir desde cualquier navegador.\n\n" +
+                "No requiere exportar ni subir archivos.");
+            return Result.Succeeded;
         }
     }
 }

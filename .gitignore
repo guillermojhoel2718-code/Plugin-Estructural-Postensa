@@ -1,0 +1,4 @@
+config.env
+obj/
+*.user
+.vs/
