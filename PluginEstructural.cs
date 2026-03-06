@@ -690,7 +690,8 @@ namespace PluginEstructural
 
         Result GuardarOLD(Document doc, string reg)
         {
-            string stamp = DateTime.Now.ToString("yyyy-MM-dd_HHmm");
+            string stamp = DateTime.Now.ToString("yyyy-MM-dd"); // un registro por dia, se sobreescribe
+
             string path  = Path.Combine(reg, stamp, "OLD");
             Utils.ExportarIFC(doc, path, Utils.Safe(doc.Title) + "_OLD");
             var sb = new StringBuilder();
