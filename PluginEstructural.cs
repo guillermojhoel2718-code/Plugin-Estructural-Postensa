@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -509,8 +509,21 @@ namespace PluginEstructural
     // ════════════════════════════════════════════════════════
     public class AppInicio : IExternalApplication
     {
+        private System.Reflection.Assembly ResolutorLibrerias(object sender, ResolveEventArgs args)
+        {
+            try
+            {
+                var asmName = new System.Reflection.AssemblyName(args.Name);
+                string dllPath = Path.Combine(Path.GetDirectoryName(typeof(AppInicio).Assembly.Location), asmName.Name + ".dll");
+                if (File.Exists(dllPath)) return System.Reflection.Assembly.LoadFrom(dllPath);
+            }
+            catch { }
+            return null;
+        }
+
         public Result OnStartup(UIControlledApplication app)
         {
+            AppDomain.CurrentDomain.AssemblyResolve += ResolutorLibrerias;
             try
             {
                 const string TAB = "BIM Estructural";
@@ -580,10 +593,10 @@ namespace PluginEstructural
                     {
                         Directory.CreateDirectory(dlg.RutaExportacion);
                         var opts = new SATExportOptions();
-                        doc.Export(dlg.RutaExportacion, Utils.Safe(doc.Title) + "_SAT", new List<ElementId> { vista.Id }, opts);
+                        doc.Export(dlg.RutaExportacion, dlg.NombreArchivo, new List<ElementId> { vista.Id }, opts);
                         TaskDlg.Show("SAT Listo",
                             "Solidos: " + sols.Count + " | Shapes: " + gen.Count +
-                            "\n\nSe ha exportado el archivo SAT en:\n" + dlg.RutaExportacion +
+                            "\n\nSe ha exportado el archivo SAT en:\n" + Path.Combine(dlg.RutaExportacion, dlg.NombreArchivo + ".sat") +
                             "\n\nVista EXPORTACION_SAT creada y activa.");
                     }
                     catch (Exception ex)
@@ -705,6 +718,9 @@ namespace PluginEstructural
         string BuscarOLD(string reg)
         {
             if (!Directory.Exists(reg)) return null;
+            if (Path.GetFileName(reg).Equals("OLD", StringComparison.OrdinalIgnoreCase)) return reg;
+            if (Directory.Exists(Path.Combine(reg, "OLD"))) return Path.Combine(reg, "OLD");
+
             var c = Directory.GetDirectories(reg)
                 .Where(d => Directory.Exists(Path.Combine(d, "OLD")))
                 .OrderByDescending(d => d).FirstOrDefault();
@@ -1215,6 +1231,7 @@ namespace PluginEstructural
         public bool         UsarSeleccion { get; private set; }
         public List<string> Niveles       { get; private set; } = new List<string>();
         public string       RutaExportacion { get; private set; }
+        public string       NombreArchivo { get; private set; }
         RadioButton rbSel, rbTodo, rbNiv;
         CheckedListBox clb;
 
@@ -1223,7 +1240,7 @@ namespace PluginEstructural
 
         public VentanaSAT(Document doc)
         {
-            Text = "Exportar SAT"; Size = new WinSize(468, 580);
+            Text = "Exportar SAT"; Size = new WinSize(468, 634);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
             BackColor = Esti.FondoOscuro; ForeColor = Esti.TextoPrincipal;
@@ -1246,31 +1263,36 @@ namespace PluginEstructural
             };
             Controls.AddRange(new System.Windows.Forms.Control[] { txtRuta, btnRuta });
 
-            Controls.Add(Esti.Lbl("Alcance:", 16, 202));
-            rbSel  = RB("Usar seleccion activa", 16, 224, true);
-            rbTodo = RB("Todo el modelo estructural", 16, 248);
-            rbNiv  = RB("Filtrar por niveles:", 16, 272);
+            Controls.Add(Esti.Lbl("Nombre del archivo (sin .sat):", 16, 196));
+            var txtNombre = new System.Windows.Forms.TextBox { Location = new WinPoint(16, 218), Size = new WinSize(390, 24), Font = Esti.FNormal };
+            txtNombre.Text = Utils.Safe(doc.Title) + "_SAT";
+
+            Controls.Add(Esti.Lbl("Alcance:", 16, 256));
+            rbSel  = RB("Usar seleccion activa", 16, 278, true);
+            rbTodo = RB("Todo el modelo estructural", 16, 302);
+            rbNiv  = RB("Filtrar por niveles:", 16, 326);
             rbNiv.CheckedChanged += (s, e) => clb.Enabled = rbNiv.Checked;
             clb = new CheckedListBox
             {
-                Location = new WinPoint(32, 296), Size = new WinSize(400, 130),
+                Location = new WinPoint(32, 350), Size = new WinSize(400, 110),
                 Enabled = false, BackColor = Esti.FondoMedio,
                 ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BorderStyle = BorderStyle.None
             };
             foreach (Level lv in new FilteredElementCollector(doc).OfClass(typeof(Level))
                 .Cast<Level>().OrderBy(l => l.Elevation))
                 clb.Items.Add(lv.Name);
-            Controls.Add(Esti.Sep(436));
+            Controls.Add(Esti.Sep(480));
             Controls.Add(Esti.PanelInfo(
                 "Exportacion SAT automatica a la ruta indicada tras generar vista.",
-                446, Esti.Acento, 40));
-            var bOK  = Esti.Btn("Exportar", Esti.Acento,  244, 496, 130, 32);
-            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 382, 496,  72, 32);
+                490, Esti.Acento, 40));
+            var bOK  = Esti.Btn("Exportar", Esti.Acento,  244, 540, 130, 32);
+            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 382, 540,  72, 32);
             bOK.Click += (s, e) =>
             {
                 UsarSeleccion = rbSel.Checked;
                 if (rbNiv.Checked) Niveles = clb.CheckedItems.Cast<string>().ToList();
                 RutaExportacion = txtRuta.Text;
+                NombreArchivo = string.IsNullOrWhiteSpace(txtNombre.Text) ? Utils.Safe(doc.Title) + "_SAT" : Utils.Safe(txtNombre.Text);
                 _ultimaRuta = txtRuta.Text;   // guardar para la proxima vez
                 DialogResult = DialogResult.OK; Close();
             };
@@ -1334,8 +1356,17 @@ namespace PluginEstructural
             Action actualizarEstado = () => {
                 string rOld = funcBuscarOLD(txtRuta.Text);
                 bool hay = (rOld != null);
-                lblEst.Text = hay ? "Version OLD encontrada: " + Path.GetFileName(Path.GetDirectoryName(rOld))
-                                  : "Sin version OLD — guarda una antes de comparar";
+                if (hay) 
+                {
+                    string dirInfo = Path.GetFileName(Path.GetDirectoryName(rOld));
+                    if (string.IsNullOrEmpty(dirInfo) || (rOld.EndsWith("OLD", StringComparison.OrdinalIgnoreCase) && Path.GetDirectoryName(rOld) != null)) 
+                        dirInfo = Path.GetFileName(Path.GetDirectoryName(rOld));
+                    lblEst.Text = "Version OLD encontrada: " + dirInfo;
+                }
+                else
+                {
+                    lblEst.Text = "Sin version OLD — guarda una antes de comparar";
+                }
                 lblEst.ForeColor = hay ? Esti.ColVerde : Esti.ColAmarillo;
                 bC.Enabled = hay;
                 bC.FlatAppearance.BorderColor = hay ? Esti.Acento : Esti.ColGris;
@@ -1345,7 +1376,7 @@ namespace PluginEstructural
             actualizarEstado();
 
             btnRuta.Click += (s, e) => {
-                using (var fbd = new FolderBrowserDialog { Description = "Carpeta de Registro BIM", SelectedPath = txtRuta.Text }) {
+                using (var fbd = new FolderBrowserDialog { Description = "Selecciona la carpeta de Registro BIM (o subcarpeta de version especifica)", SelectedPath = txtRuta.Text }) {
                     if (fbd.ShowDialog() == DialogResult.OK) {
                         txtRuta.Text = fbd.SelectedPath;
                         RutaElegida = fbd.SelectedPath;
@@ -1375,8 +1406,8 @@ namespace PluginEstructural
     public class CmdCorteJerarquico : IExternalCommand
     {
         // Jerarquia: mayor prioridad corta a menor.
-        // 0=Suelos/Losas, 1=Pilares/Columnas, 2=Vigas/Armazones,
-        // 3=Muros, 4=Cubiertas, 5=Cimentaciones, 6=Escaleras/Rampas/Varios
+        // 0=Suelos/Losas, 1=Pilares/Columnas, 2=Vigas/Armazones, 3=Muros,
+        // 4=Cubiertas, 5=Cimentaciones, 6=Escaleras/Rampas, 7=Varios/EstructurasTemporales
         static readonly List<BuiltInCategory>[] Jerarquia = new[]
         {
             new List<BuiltInCategory> { BuiltInCategory.OST_Floors },
@@ -1385,7 +1416,8 @@ namespace PluginEstructural
             new List<BuiltInCategory> { BuiltInCategory.OST_Walls },
             new List<BuiltInCategory> { BuiltInCategory.OST_Roofs },
             new List<BuiltInCategory> { BuiltInCategory.OST_StructuralFoundation, BuiltInCategory.OST_StructConnections },
-            new List<BuiltInCategory> { BuiltInCategory.OST_Stairs, BuiltInCategory.OST_Ramps, BuiltInCategory.OST_GenericModel },
+            new List<BuiltInCategory> { BuiltInCategory.OST_Stairs, BuiltInCategory.OST_Ramps },
+            new List<BuiltInCategory> { BuiltInCategory.OST_GenericModel, BuiltInCategory.OST_Parts },
         };
         static readonly string[] NombresNivel =
         {
@@ -1395,7 +1427,8 @@ namespace PluginEstructural
             "Muros",
             "Cubiertas",
             "Cimentaciones / Conexiones",
-            "Escaleras / Rampas / Varios",
+            "Escaleras / Rampas",
+            "Estructuras Temporales / Varios",
         };
 
         public Result Execute(ExternalCommandData data, ref string msg, ElementSet es)
@@ -1490,20 +1523,21 @@ namespace PluginEstructural
             "Muros",
             "Cubiertas",
             "Cimentaciones / Conexiones",
-            "Escaleras / Rampas / Varios",
+            "Escaleras / Rampas",
+            "Estructuras Temporales / Varios",
         };
 
-        public bool[]       NivelesActivos { get; private set; } = new bool[7];
+        public bool[]       NivelesActivos { get; private set; } = new bool[8];
         public AlcanceCorte Alcance        { get; private set; } = AlcanceCorte.VistaActiva;
         public bool         AutoSwitch     { get; private set; } = true;
 
         RadioButton rbVista, rbTodo;
-        CheckBox[]  chks = new CheckBox[7];
+        CheckBox[]  chks = new CheckBox[8];
         CheckBox    chkSwitch;
 
         public VentanaCorte()
         {
-            Text = "Corte Geometrico"; Size = new WinSize(468, 660);
+            Text = "Corte Geometrico"; Size = new WinSize(468, 690);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
             BackColor = Esti.FondoOscuro; ForeColor = Esti.TextoPrincipal;
@@ -1527,7 +1561,7 @@ namespace PluginEstructural
 
             // ── Niveles jerarquicos ────────────────────────────
             Controls.Add(Esti.Lbl("Niveles a procesar (de mayor a menor jerarquia):", 16, 224));
-            // Columores para cada nivel (arcoiris suave)
+            // Colores
             WinColor[] colores = {
                 WinColor.FromArgb(22,160,230),  // azul  — Suelos
                 WinColor.FromArgb(39,201,111),  // verde — Pilares
@@ -1535,9 +1569,10 @@ namespace PluginEstructural
                 WinColor.FromArgb(255,138,60),  // naranja — Muros
                 WinColor.FromArgb(229,57,53),   // rojo — Cubiertas
                 WinColor.FromArgb(156,39,176),  // morado — Cimentacion
+                WinColor.FromArgb(0,188,212),   // cian — Escaleras
                 WinColor.FromArgb(100,110,120), // gris — Varios
             };
-            for (int i = 0; i < 7; i++)
+            for (int i = 0; i < 8; i++)
             {
                 int y = 248 + i * 30;
                 // Indicador de color de nivel
@@ -1554,40 +1589,40 @@ namespace PluginEstructural
 
             // Boton seleccionar / deseleccionar todo
             var bAll = new WinButton { Text = "Todos",
-                Location = new WinPoint(16, 462), Size = new WinSize(70, 24),
+                Location = new WinPoint(16, 492), Size = new WinSize(70, 24),
                 Font = Esti.FPeque, BackColor = Esti.Acento, ForeColor = WinColor.White,
                 FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
             bAll.FlatAppearance.BorderSize = 0;
             bAll.Click += (s, e) => { foreach (var c in chks) c.Checked = true; };
             var bNone = new WinButton { Text = "Ninguno",
-                Location = new WinPoint(92, 462), Size = new WinSize(70, 24),
+                Location = new WinPoint(92, 492), Size = new WinSize(70, 24),
                 Font = Esti.FPeque, BackColor = Esti.ColGris, ForeColor = WinColor.White,
                 FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
             bNone.FlatAppearance.BorderSize = 0;
             bNone.Click += (s, e) => { foreach (var c in chks) c.Checked = false; };
             Controls.AddRange(new System.Windows.Forms.Control[] { bAll, bNone });
 
-            Controls.Add(Esti.Sep(492));
+            Controls.Add(Esti.Sep(522));
 
             // ── Opciones ───────────────────────────────────────
             chkSwitch = new CheckBox { Text = "Corregir orden de corte automaticamente (SwitchJoinOrder)",
-                Location = new WinPoint(16, 504), AutoSize = true, Checked = true,
+                Location = new WinPoint(16, 534), AutoSize = true, Checked = true,
                 ForeColor = Esti.TextoSecundario, Font = Esti.FPeque, BackColor = WinColor.Transparent };
             Controls.Add(chkSwitch);
 
             // Info
             Controls.Add(Esti.PanelInfo(
                 "El elemento de mayor jerarquia corta al de menor. Usa BoundingBox para optimizar rendimiento.",
-                524, Esti.Acento, 36));
+                554, Esti.Acento, 36));
 
             // ── Botones ────────────────────────────────────────
-            var bOK  = Esti.Btn("Ejecutar", Esti.Acento,  230, 568, 130, 32);
-            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 368, 568,  82, 32);
+            var bOK  = Esti.Btn("Ejecutar", Esti.Acento,  230, 598, 130, 32);
+            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 368, 598,  82, 32);
             bOK.Click += (s, e) =>
             {
                 Alcance    = rbVista.Checked ? AlcanceCorte.VistaActiva : AlcanceCorte.TodoElModelo;
                 AutoSwitch = chkSwitch.Checked;
-                for (int i = 0; i < 7; i++) NivelesActivos[i] = chks[i].Checked;
+                for (int i = 0; i < 8; i++) NivelesActivos[i] = chks[i].Checked;
                 DialogResult = DialogResult.OK; Close();
             };
             bCan.DialogResult = DialogResult.Cancel;
