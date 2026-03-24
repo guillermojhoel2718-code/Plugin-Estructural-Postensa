@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <RevitAddIns>
   <AddIn Type="Application">
-    <Name>Plugin BIM Estructural</Name>
+    <Name>Plugin BIM Estructural — POSTENSA Design &amp; Build</Name>
     <Assembly>PluginEstructural.dll</Assembly>
     <FullClassName>PluginEstructural.AppInicio</FullClassName>
     <ClientId>A1B2C3D4-E5F6-7890-ABCD-EF1234567890</ClientId>
-    <VendorId>EMPRESA_ESTRUCTURAL</VendorId>
-    <VendorDescription>Plugin BIM — SAT + Comparador OLD/NEW + Viewer</VendorDescription>
+    <VendorId>GJHERNANDEZ_POSTENSA</VendorId>
+    <VendorDescription>Guillermo Jhoel Hernández Gómez — POSTENSA Design &amp; Build | Plugin BIM Estructural v2.1</VendorDescription>
   </AddIn>
 </RevitAddIns>

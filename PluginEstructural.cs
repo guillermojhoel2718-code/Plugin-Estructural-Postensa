@@ -321,9 +321,16 @@ namespace PluginEstructural
                 sb.Append(bb.Min.Z.ToString("F3")); sb.Append(bb.Max.X.ToString("F3"));
                 sb.Append(bb.Max.Y.ToString("F3")); sb.Append(bb.Max.Z.ToString("F3"));
             }
-            foreach (Parameter p in e.Parameters)
+            var parametros = e.Parameters.Cast<Parameter>().OrderBy(p => p.Definition.Name);
+            foreach (Parameter p in parametros)
                 try { if (p.HasValue && !p.IsReadOnly) sb.Append(p.AsValueString() ?? ""); } catch { }
-            return sb.ToString().GetHashCode().ToString("X8");
+
+            using (var md5 = System.Security.Cryptography.MD5.Create())
+            {
+                byte[] inputBytes = Encoding.UTF8.GetBytes(sb.ToString());
+                byte[] hashBytes = md5.ComputeHash(inputBytes);
+                return BitConverter.ToString(hashBytes).Replace("-", "");
+            }
         }
 
         internal static Dictionary<string, string> ParamsLegibles(Element e)
@@ -1151,43 +1158,6 @@ namespace PluginEstructural
                     ws.Range(10, 1, fila, 8).Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Medium;
                     ws.Range(10, 1, fila, 8).Style.Border.OutsideBorderColor = cGrisOsc;
 
-                    // ── HOJA 2: AUDITORIA ────────────────────────────────────
-                    var ws2 = wb.Worksheets.Add("AUDITORIA");
-                    ws2.ShowGridLines = false;
-                    var hdrs2 = new[] { "Estado", "UniqueId", "Categoria", "Familia y Tipo", "Nivel" };
-                    for (int c = 1; c <= 5; c++)
-                    {
-                        ws2.Cell(1, c).Value = hdrs2[c - 1];
-                        ws2.Cell(1, c).Style.Font.Bold = true;
-                        ws2.Cell(1, c).Style.Fill.BackgroundColor = cGrisOsc;
-                        ws2.Cell(1, c).Style.Font.FontColor = cBlanco;
-                        ws2.Cell(1, c).Style.Font.FontSize = 10;
-                    }
-                    ws2.Row(1).Height = 20;
-
-                    int f2 = 2;
-                    foreach (var item in lista)
-                    {
-                        bool par2 = (f2 % 2 == 0);
-                        ws2.Cell(f2, 1).Value = item.estado;
-                        ws2.Cell(f2, 1).Style.Font.Bold = true;
-                        if (item.estado == "NUEVO")           { ws2.Cell(f2, 1).Style.Fill.BackgroundColor = cBgNuevo; ws2.Cell(f2, 1).Style.Font.FontColor = cTxNuevo; }
-                        else if (item.estado == "MODIFICADO") { ws2.Cell(f2, 1).Style.Fill.BackgroundColor = cBgMod;   ws2.Cell(f2, 1).Style.Font.FontColor = cTxMod;   }
-                        else                                   { ws2.Cell(f2, 1).Style.Fill.BackgroundColor = cBgElim;  ws2.Cell(f2, 1).Style.Font.FontColor = cTxElim;  }
-                        ws2.Cell(f2, 2).Value = item.uid;
-                        ws2.Cell(f2, 3).Value = item.cat;
-                        ws2.Cell(f2, 4).Value = item.famTipo;
-                        ws2.Cell(f2, 5).Value = item.nivel;
-                        var rg = ws2.Range(f2, 2, f2, 5);
-                        rg.Style.Fill.BackgroundColor = par2 ? cBlanco : cGrisClar;
-                        rg.Style.Font.FontColor = cTextoGris;
-                        rg.Style.Border.BottomBorder = ClosedXML.Excel.XLBorderStyleValues.Hair;
-                        rg.Style.Border.BottomBorderColor = cBorde;
-                        f2++;
-                    }
-                    ws2.Columns().AdjustToContents();
-                    ws2.SheetView.FreezeRows(1);
-
                     wb.SaveAs(rutaExcel);
                 }
                 try { System.Diagnostics.Process.Start(rutaExcel); } catch { }
@@ -1422,7 +1392,7 @@ namespace PluginEstructural
     // ════════════════════════════════════════════════════════
     //  CMD 3 — CORTE JERARQUICO
     // ════════════════════════════════════════════════════════
-    internal enum AlcanceCorte { VistaActiva, TodoElModelo }
+    internal enum AlcanceCorte { VistaActiva, TodoElModelo, SeleccionActiva }
 
     [Transaction(TransactionMode.Manual)]
     public class CmdCorteJerarquico : IExternalCommand
@@ -1468,7 +1438,9 @@ namespace PluginEstructural
                 Func<List<BuiltInCategory>, List<Element>> Colectar = cats =>
                 {
                     var f = new ElementMulticategoryFilter(cats);
-                    var col = alcance == AlcanceCorte.VistaActiva
+                    var col = alcance == AlcanceCorte.SeleccionActiva
+                    ? new FilteredElementCollector(doc, uidoc.Selection.GetElementIds())
+                    : alcance == AlcanceCorte.VistaActiva
                         ? new FilteredElementCollector(doc, doc.ActiveView.Id)
                         : new FilteredElementCollector(doc);
                     return col.WherePasses(f).WhereElementIsNotElementType().ToList();
@@ -1499,7 +1471,9 @@ namespace PluginEstructural
                 TaskDlg.Show("Corte Geometrico",
                     "Corte jerarquico completado.\n" +
                     "Uniones procesadas: " + total + "\n" +
-                    "Alcance: " + (alcance == AlcanceCorte.VistaActiva ? "Vista activa" : "Todo el modelo"));
+                    "Alcance: " + (alcance == AlcanceCorte.SeleccionActiva ? "Seleccion activa"
+                                 : alcance == AlcanceCorte.VistaActiva    ? "Vista activa"
+                                 : "Todo el modelo"));
             }
             return Result.Succeeded;
         }
@@ -1553,13 +1527,13 @@ namespace PluginEstructural
         public AlcanceCorte Alcance        { get; private set; } = AlcanceCorte.VistaActiva;
         public bool         AutoSwitch     { get; private set; } = true;
 
-        RadioButton rbVista, rbTodo;
+        RadioButton rbVista, rbTodo, rbSel;
         CheckBox[]  chks = new CheckBox[8];
         CheckBox    chkSwitch;
 
         public VentanaCorte()
         {
-            Text = "Corte Geometrico"; Size = new WinSize(468, 690);
+            Text = "Corte Geometrico"; Size = new WinSize(468, 740);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
             BackColor = Esti.FondoOscuro; ForeColor = Esti.TextoPrincipal;
@@ -1572,17 +1546,20 @@ namespace PluginEstructural
 
             // ── Alcance ────────────────────────────────────────
             Controls.Add(Esti.Lbl("Alcance:", 16, 142));
-            rbVista = new RadioButton { Text = "Solo vista activa (mas rapido)",
-                Location = new WinPoint(16, 164), AutoSize = true, Checked = true,
+            rbSel   = new RadioButton { Text = "Usar seleccion activa",
+                Location = new WinPoint(16, 162), AutoSize = true, Checked = false,
+                ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BackColor = WinColor.Transparent };
+            rbVista = new RadioButton { Text = "Vista activa (mas rapido)",
+                Location = new WinPoint(16, 184), AutoSize = true, Checked = true,
                 ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BackColor = WinColor.Transparent };
             rbTodo  = new RadioButton { Text = "Todo el modelo",
-                Location = new WinPoint(16, 188), AutoSize = true,
+                Location = new WinPoint(16, 206), AutoSize = true,
                 ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BackColor = WinColor.Transparent };
-            Controls.AddRange(new System.Windows.Forms.Control[] { rbVista, rbTodo });
-            Controls.Add(Esti.Sep(212));
+            Controls.AddRange(new System.Windows.Forms.Control[] { rbSel, rbVista, rbTodo });
+            Controls.Add(Esti.Sep(228));
 
             // ── Niveles jerarquicos ────────────────────────────
-            Controls.Add(Esti.Lbl("Niveles a procesar (de mayor a menor jerarquia):", 16, 224));
+            Controls.Add(Esti.Lbl("Niveles a procesar (de mayor a menor jerarquia):", 16, 240));
             // Colores
             WinColor[] colores = {
                 WinColor.FromArgb(22,160,230),  // azul  — Suelos
@@ -1596,8 +1573,7 @@ namespace PluginEstructural
             };
             for (int i = 0; i < 8; i++)
             {
-                int y = 248 + i * 30;
-                // Indicador de color de nivel
+                int y = 264 + i * 30;
                 var dot = new WinPanel { Location = new WinPoint(20, y + 4),
                     Size = new WinSize(12, 12), BackColor = colores[i] };
                 dot.Paint += (s, e) => {};
@@ -1611,38 +1587,39 @@ namespace PluginEstructural
 
             // Boton seleccionar / deseleccionar todo
             var bAll = new WinButton { Text = "Todos",
-                Location = new WinPoint(16, 492), Size = new WinSize(70, 24),
+                Location = new WinPoint(16, 510), Size = new WinSize(70, 24),
                 Font = Esti.FPeque, BackColor = Esti.Acento, ForeColor = WinColor.White,
                 FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
             bAll.FlatAppearance.BorderSize = 0;
             bAll.Click += (s, e) => { foreach (var c in chks) c.Checked = true; };
             var bNone = new WinButton { Text = "Ninguno",
-                Location = new WinPoint(92, 492), Size = new WinSize(70, 24),
+                Location = new WinPoint(92, 510), Size = new WinSize(70, 24),
                 Font = Esti.FPeque, BackColor = Esti.ColGris, ForeColor = WinColor.White,
                 FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
             bNone.FlatAppearance.BorderSize = 0;
             bNone.Click += (s, e) => { foreach (var c in chks) c.Checked = false; };
             Controls.AddRange(new System.Windows.Forms.Control[] { bAll, bNone });
 
-            Controls.Add(Esti.Sep(522));
+            Controls.Add(Esti.Sep(542));
 
             // ── Opciones ───────────────────────────────────────
             chkSwitch = new CheckBox { Text = "Corregir orden de corte automaticamente (SwitchJoinOrder)",
-                Location = new WinPoint(16, 534), AutoSize = true, Checked = true,
+                Location = new WinPoint(16, 554), AutoSize = true, Checked = true,
                 ForeColor = Esti.TextoSecundario, Font = Esti.FPeque, BackColor = WinColor.Transparent };
             Controls.Add(chkSwitch);
 
             // Info
             Controls.Add(Esti.PanelInfo(
                 "El elemento de mayor jerarquia corta al de menor. Usa BoundingBox para optimizar rendimiento.",
-                554, Esti.Acento, 36));
+                578, Esti.Acento, 36));
 
             // ── Botones ────────────────────────────────────────
-            var bOK  = Esti.Btn("Ejecutar", Esti.Acento,  230, 598, 130, 32);
-            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 368, 598,  82, 32);
+            var bOK  = Esti.Btn("Ejecutar", Esti.Acento,  230, 626, 130, 32);
+            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 368, 626,  82, 32);
             bOK.Click += (s, e) =>
             {
-                Alcance    = rbVista.Checked ? AlcanceCorte.VistaActiva : AlcanceCorte.TodoElModelo;
+                Alcance    = rbSel.Checked ? AlcanceCorte.SeleccionActiva
+                           : rbVista.Checked ? AlcanceCorte.VistaActiva : AlcanceCorte.TodoElModelo;
                 AutoSwitch = chkSwitch.Checked;
                 for (int i = 0; i < 8; i++) NivelesActivos[i] = chks[i].Checked;
                 DialogResult = DialogResult.OK; Close();
