@@ -1704,22 +1704,6 @@ namespace PluginEstructural
             if (listaFamilias.Count == 0)
             { TaskDlg.Show("Sin familias", "No hay familias cargadas en el proyecto."); return Result.Cancelled; }
 
-            string nombreFamilia;
-            string layerCasetones;
-
-            using (var dlg = new VentanaCasetones(listaFamilias))
-            {
-                if (dlg.ShowDialog() != DialogResult.OK) return Result.Cancelled;
-                nombreFamilia  = dlg.FamiliaSeleccionada;
-                layerCasetones = dlg.LayerSeleccionado;
-            }
-
-            var simbolo = new FilteredElementCollector(doc)
-                .OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
-                .FirstOrDefault(x => (x.FamilyName + " : " + x.Name) == nombreFamilia);
-            if (simbolo == null)
-            { TaskDlg.Show("Error", "No se encontro la familia seleccionada."); return Result.Failed; }
-
             try
             {
                 TaskDlg.Show("Instrucciones",
@@ -1732,10 +1716,51 @@ namespace PluginEstructural
                 Reference refCAD = uidoc.Selection.PickObject(ObjectType.Element, new FiltroCAD(), "PASO 2: Selecciona el archivo CAD");
                 ImportInstance cadInstance = doc.GetElement(refCAD) as ImportInstance;
 
+                // Leer capas del CAD
+                var capasCAD = new List<string>();
+                if (cadInstance.Category != null)
+                {
+                    foreach (Category sub in cadInstance.Category.SubCategories) capasCAD.Add(sub.Name);
+                }
+                if (capasCAD.Count == 0) capasCAD.Add("0"); // Fallback
+
+                string nombreFamilia;
+                string layerCasetones;
+
+                using (var dlg = new VentanaCasetones(listaFamilias, capasCAD))
+                {
+                    if (dlg.ShowDialog() != DialogResult.OK) return Result.Cancelled;
+                    nombreFamilia  = dlg.FamiliaSeleccionada;
+                    layerCasetones = dlg.LayerSeleccionado;
+                }
+
+                var simbolo = new FilteredElementCollector(doc)
+                    .OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
+                    .FirstOrDefault(x => (x.FamilyName + " : " + x.Name) == nombreFamilia);
+                if (simbolo == null)
+                { TaskDlg.Show("Error", "No se encontro la familia seleccionada."); return Result.Failed; }
+
+                if (!simbolo.IsActive) { using (var t = new Transaction(doc, "Activar Familia")) { t.Start(); simbolo.Activate(); t.Commit(); } }
+
                 // Obtener solido de la losa para filtrar por desniveles
                 Solid solidoLosa = Utils.ObtenerSolidos(losa).OrderByDescending(s => s.Volume).FirstOrDefault();
                 double zInferior = losa.get_BoundingBox(null).Min.Z;
                 Level nivelLosa = doc.GetElement(losa.LevelId) as Level;
+
+                // Encontrar la cara superior más grande para filtrar por área
+                Face caraSuperior = null;
+                if (solidoLosa != null)
+                {
+                    double maxArea = 0;
+                    foreach (Face f in solidoLosa.Faces)
+                    {
+                        XYZ normal = f.ComputeNormal(new UV(0.5, 0.5));
+                        if (Math.Abs(normal.Z - 1.0) < 0.01) // Apunta hacia arriba (+Z)
+                        {
+                            if (f.Area > maxArea) { caraSuperior = f; maxArea = f.Area; }
+                        }
+                    }
+                }
 
                 var todosLosGrupos = new List<List<XYZ>>();
                 var lineasSueltas  = new List<Line>();
@@ -1801,6 +1826,13 @@ namespace PluginEstructural
                                 largoReal = Math.Max(calcAncho, calcLargo);
 
                                 if (anchoReal < 0.3 || largoReal < 0.3) continue; // Filtro de tamaño del macro
+                            }
+
+                            // ── FILTRO DE ÁREA (PROYECCIÓN) ──
+                            if (caraSuperior != null)
+                            {
+                                var proj = caraSuperior.Project(centro);
+                                if (proj == null) { fueraLosa++; continue; }
                             }
 
                             // ── FILTRO ANTI-DUPLICADOS ──
@@ -1977,7 +2009,7 @@ namespace PluginEstructural
         RadioButton rbAdaptativo, rbParametrico;
         System.Windows.Forms.ComboBox cmb;
 
-        public VentanaCasetones(List<FamilySymbol> familias)
+        public VentanaCasetones(List<FamilySymbol> familias, List<string> capas)
         {
             _adaptativas = familias.Where(s => AdaptiveComponentInstanceUtils.IsAdaptiveFamilySymbol(s)).ToList();
             _parametricas = familias.Where(s => !AdaptiveComponentInstanceUtils.IsAdaptiveFamilySymbol(s)).ToList();
@@ -2015,17 +2047,20 @@ namespace PluginEstructural
             };
             Controls.Add(cmb);
 
-            Controls.Add(Esti.Lbl("Nombre del layer de AutoCAD (Ej: C-V, Caseton):", 16, 242));
-            var txt = new System.Windows.Forms.TextBox
+            Controls.Add(Esti.Lbl("Selecciona la capa de AutoCAD:", 16, 242));
+            var cmbLayer = new System.Windows.Forms.ComboBox
             {
-                Text = "C-V", Location = new WinPoint(16, 264), Size = new WinSize(420, 24), Font = Esti.FNormal
+                Location = new WinPoint(16, 264), Size = new WinSize(420, 24),
+                DropDownStyle = ComboBoxStyle.DropDownList, Font = Esti.FNormal
             };
-            Controls.Add(txt);
+            cmbLayer.Items.AddRange(capas.OrderBy(x => x).ToArray());
+            if (cmbLayer.Items.Count > 0) cmbLayer.SelectedIndex = 0;
+            Controls.Add(cmbLayer);
 
             Controls.Add(Esti.Sep(304));
             Controls.Add(Esti.PanelInfo(
-                "Solo se colocan casetones cuyo centro cae dentro del solido de la losa.\n" +
-                "Los que quedan volando en desniveles se ignoran automaticamente.",
+                "Solo se colocan casetones en el área de la losa.\n" +
+                "Los que caen fuera se filtran automáticamente.",
                 314, Esti.ColVerde, 44));
 
             var bOK  = Esti.Btn("Iniciar", Esti.Acento,  268, 374, 100, 32);
@@ -2033,7 +2068,7 @@ namespace PluginEstructural
             bOK.Click += (s, e) =>
             {
                 FamiliaSeleccionada = cmb.Text;
-                LayerSeleccionado   = txt.Text;
+                LayerSeleccionado   = cmbLayer.Text;
                 DialogResult = DialogResult.OK; Close();
             };
             bCan.DialogResult = DialogResult.Cancel;
