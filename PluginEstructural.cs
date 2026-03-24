@@ -1779,14 +1779,6 @@ namespace PluginEstructural
                             // ── FILTRO ANTI-DUPLICADOS ──
                             if (centrosColocados.Any(c => c.DistanceTo(centro) < 0.16)) continue;
 
-                            // ── FILTRO DE DESNIVEL: solo colocar si el centro cae dentro del solido de la losa ──
-                            if (solidoLosa != null)
-                            {
-                                double zMid = (solidoLosa.GetBoundingBox().Min.Z + solidoLosa.GetBoundingBox().Max.Z) / 2.0;
-                                XYZ centroTest = new XYZ(centro.X, centro.Y, zMid);
-                                if (!PuntoEnSolido(solidoLosa, centroTest)) { fueraLosa++; continue; }
-                            }
-
                             centrosColocados.Add(centro);
                             FamilyInstance caseton = null;
 
