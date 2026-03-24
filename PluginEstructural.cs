@@ -1765,32 +1765,48 @@ namespace PluginEstructural
                     {
                         try
                         {
-                            var esquinas = ObtenerEsquinasUnicas(puntosBrutos, 0.15);
-                            if (esquinas.Count != 4) { ignorados++; continue; }
-                            esquinas = OrdenarPuntosCirculo(esquinas);
+                            XYZ centro = null;
+                            double anchoReal = 0, largoReal = 0;
+                            XYZ p1 = null, p2 = null, p3 = null, p4 = null;
 
-                            XYZ p1 = new XYZ(esquinas[0].X, esquinas[0].Y, zInferior);
-                            XYZ p2 = new XYZ(esquinas[1].X, esquinas[1].Y, zInferior);
-                            XYZ p3 = new XYZ(esquinas[2].X, esquinas[2].Y, zInferior);
-                            XYZ p4 = new XYZ(esquinas[3].X, esquinas[3].Y, zInferior);
+                            if (esAdaptativo)
+                            {
+                                var esquinas = ObtenerEsquinasUnicas(puntosBrutos, 0.15);
+                                if (esquinas.Count != 4) { ignorados++; continue; }
+                                esquinas = OrdenarPuntosCirculo(esquinas);
 
-                            XYZ centro = new XYZ((p1.X + p3.X) / 2, (p1.Y + p3.Y) / 2, zInferior);
+                                p1 = new XYZ(esquinas[0].X, esquinas[0].Y, zInferior);
+                                p2 = new XYZ(esquinas[1].X, esquinas[1].Y, zInferior);
+                                p3 = new XYZ(esquinas[2].X, esquinas[2].Y, zInferior);
+                                p4 = new XYZ(esquinas[3].X, esquinas[3].Y, zInferior);
+
+                                centro = new XYZ((p1.X + p3.X) / 2, (p1.Y + p3.Y) / 2, zInferior);
+                            }
+                            else
+                            {
+                                // Lógica directa del macro para paramétricos
+                                double minX = puntosBrutos.Min(p => p.X);
+                                double maxX = puntosBrutos.Max(p => p.X);
+                                double minY = puntosBrutos.Min(p => p.Y);
+                                double maxY = puntosBrutos.Max(p => p.Y);
+
+                                double cx = (minX + maxX) / 2.0;
+                                double cy = (minY + maxY) / 2.0;
+                                centro = new XYZ(cx, cy, zInferior);
+
+                                double calcAncho = maxX - minX;
+                                double calcLargo = maxY - minY;
+                                anchoReal = Math.Min(calcAncho, calcLargo);
+                                largoReal = Math.Max(calcAncho, calcLargo);
+
+                                if (anchoReal < 0.3 || largoReal < 0.3) continue; // Filtro de tamaño del macro
+                            }
 
                             // ── FILTRO ANTI-DUPLICADOS ──
                             if (centrosColocados.Any(c => c.DistanceTo(centro) < 0.16)) continue;
 
                             centrosColocados.Add(centro);
                             FamilyInstance caseton = null;
-
-                            // Calcular dimensiones para familias paramétricas
-                            double minX = esquinas.Min(p => p.X);
-                            double maxX = esquinas.Max(p => p.X);
-                            double minY = esquinas.Min(p => p.Y);
-                            double maxY = esquinas.Max(p => p.Y);
-                            double calcAncho = maxX - minX;
-                            double calcLargo = maxY - minY;
-                            double anchoReal = Math.Min(calcAncho, calcLargo);
-                            double largoReal = Math.Max(calcAncho, calcLargo);
 
                             if (esAdaptativo)
                             {
@@ -1810,7 +1826,6 @@ namespace PluginEstructural
                                 caseton = doc.Create.NewFamilyInstance(centro, simbolo, StructuralType.NonStructural);
                                 casetonesOK++;
 
-                                // Asignar parámetros Ancho y Largo si existen
                                 try
                                 {
                                     Parameter pAncho = caseton.LookupParameter("Ancho");
