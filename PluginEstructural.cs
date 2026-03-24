@@ -1735,6 +1735,7 @@ namespace PluginEstructural
                 // Obtener solido de la losa para filtrar por desniveles
                 Solid solidoLosa = Utils.ObtenerSolidos(losa).OrderByDescending(s => s.Volume).FirstOrDefault();
                 double zInferior = losa.get_BoundingBox(null).Min.Z;
+                Level nivelLosa = doc.GetElement(losa.LevelId) as Level;
 
                 var todosLosGrupos = new List<List<XYZ>>();
                 var lineasSueltas  = new List<Line>();
@@ -1823,7 +1824,7 @@ namespace PluginEstructural
                             }
                             else
                             {
-                                caseton = doc.Create.NewFamilyInstance(centro, simbolo, StructuralType.NonStructural);
+                                caseton = doc.Create.NewFamilyInstance(centro, simbolo, losa, nivelLosa, StructuralType.NonStructural);
                                 casetonesOK++;
 
                                 try
