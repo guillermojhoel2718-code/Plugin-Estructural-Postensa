@@ -1692,11 +1692,10 @@ namespace PluginEstructural
             var uidoc = data.Application.ActiveUIDocument;
             var doc   = uidoc.Document;
 
-            // Listar familias adaptativas de 4 puntos
+            // Listar todas las familias de simbolos
             var listaFamilias = new FilteredElementCollector(doc)
                 .OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
-                .Select(x => x.FamilyName + " : " + x.Name)
-                .OrderBy(x => x).ToList();
+                .OrderBy(x => x.FamilyName).ThenBy(x => x.Name).ToList();
 
             if (listaFamilias.Count == 0)
             { TaskDlg.Show("Sin familias", "No hay familias cargadas en el proyecto."); return Result.Cancelled; }
@@ -1787,6 +1786,16 @@ namespace PluginEstructural
                             centrosColocados.Add(centro);
                             FamilyInstance caseton = null;
 
+                            // Calcular dimensiones para familias paramétricas
+                            double minX = esquinas.Min(p => p.X);
+                            double maxX = esquinas.Max(p => p.X);
+                            double minY = esquinas.Min(p => p.Y);
+                            double maxY = esquinas.Max(p => p.Y);
+                            double calcAncho = maxX - minX;
+                            double calcLargo = maxY - minY;
+                            double anchoReal = Math.Min(calcAncho, calcLargo);
+                            double largoReal = Math.Max(calcAncho, calcLargo);
+
                             if (esAdaptativo)
                             {
                                 caseton = AdaptiveComponentInstanceUtils.CreateAdaptiveComponentInstance(doc, simbolo);
@@ -1804,6 +1813,16 @@ namespace PluginEstructural
                             {
                                 caseton = doc.Create.NewFamilyInstance(centro, simbolo, StructuralType.NonStructural);
                                 casetonesOK++;
+
+                                // Asignar parámetros Ancho y Largo si existen
+                                try
+                                {
+                                    Parameter pAncho = caseton.LookupParameter("Ancho");
+                                    Parameter pLargo = caseton.LookupParameter("Largo");
+                                    if (pAncho != null) pAncho.Set(anchoReal);
+                                    if (pLargo != null) pLargo.Set(largoReal);
+                                }
+                                catch { }
                             }
 
                             try { if (caseton != null) { InstanceVoidCutUtils.AddInstanceVoidCut(doc, losa, caseton); cortesOK++; } } catch { }
@@ -1894,7 +1913,11 @@ namespace PluginEstructural
             {
                 var gs = doc.GetElement(gsId) as GraphicsStyle;
                 if (gs?.GraphicsStyleCategory != null)
-                    return gs.GraphicsStyleCategory.Name.Equals(target, StringComparison.InvariantCultureIgnoreCase);
+                {
+                    string catName = gs.GraphicsStyleCategory.Name;
+                    string[] targets = target.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
+                    return targets.Any(t => catName.Equals(t.Trim(), StringComparison.InvariantCultureIgnoreCase));
+                }
             }
             return false;
         }
@@ -1937,42 +1960,64 @@ namespace PluginEstructural
         public string FamiliaSeleccionada { get; private set; }
         public string LayerSeleccionado   { get; private set; }
 
-        public VentanaCasetones(List<string> familias)
+        List<FamilySymbol> _adaptativas;
+        List<FamilySymbol> _parametricas;
+        RadioButton rbAdaptativo, rbParametrico;
+        System.Windows.Forms.ComboBox cmb;
+
+        public VentanaCasetones(List<FamilySymbol> familias)
         {
-            Text = "Colocar Casetones"; Size = new WinSize(468, 380);
+            _adaptativas = familias.Where(s => AdaptiveComponentInstanceUtils.IsAdaptiveFamilySymbol(s)).ToList();
+            _parametricas = familias.Where(s => !AdaptiveComponentInstanceUtils.IsAdaptiveFamilySymbol(s)).ToList();
+
+            Text = "Colocar Casetones"; Size = new WinSize(468, 430);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
             BackColor = Esti.FondoOscuro; ForeColor = Esti.TextoPrincipal;
             Controls.Add(Esti.HeaderLogo(468));
 
-            Controls.Add(Esti.Titulo("COLOCAR CASETONES ADAPTATIVOS", 16, 80));
-            Controls.Add(Esti.Lbl("Coloca familias de 4 puntos desde reticula CAD sobre la losa.", 16, 108));
+            Controls.Add(Esti.Titulo("COLOCAR CASETONES", 16, 80));
+            Controls.Add(Esti.Lbl("Coloca familias desde reticula CAD sobre la losa.", 16, 108));
             Controls.Add(Esti.Sep(132));
 
-            Controls.Add(Esti.Lbl("Familia adaptativa (4 puntos):", 16, 146));
-            var cmb = new System.Windows.Forms.ComboBox
+            // ── Opciones de Tipo ──
+            rbAdaptativo = new RadioButton
             {
-                Location = new WinPoint(16, 168), Size = new WinSize(420, 24),
+                Text = "Adaptativos (4 Puntos)", Location = new WinPoint(16, 146), AutoSize = true, Checked = true,
+                ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BackColor = WinColor.Transparent
+            };
+            rbParametrico = new RadioButton
+            {
+                Text = "Paramétricos (1 Punto + Parámetros)", Location = new WinPoint(210, 146), AutoSize = true,
+                ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, BackColor = WinColor.Transparent
+            };
+            rbAdaptativo.CheckedChanged += (s, e) => ActualizarCombo();
+            rbParametrico.CheckedChanged += (s, e) => ActualizarCombo();
+            Controls.AddRange(new System.Windows.Forms.Control[] { rbAdaptativo, rbParametrico });
+
+            Controls.Add(Esti.Lbl("Selecciona la Familia:", 16, 182));
+            cmb = new System.Windows.Forms.ComboBox
+            {
+                Location = new WinPoint(16, 204), Size = new WinSize(420, 24),
                 DropDownStyle = ComboBoxStyle.DropDownList, Font = Esti.FNormal
             };
-            cmb.DataSource = familias;
             Controls.Add(cmb);
 
-            Controls.Add(Esti.Lbl("Nombre del layer de AutoCAD:", 16, 206));
+            Controls.Add(Esti.Lbl("Nombre del layer de AutoCAD (Ej: C-V, Caseton):", 16, 242));
             var txt = new System.Windows.Forms.TextBox
             {
-                Text = "C-V", Location = new WinPoint(16, 228), Size = new WinSize(420, 24), Font = Esti.FNormal
+                Text = "C-V", Location = new WinPoint(16, 264), Size = new WinSize(420, 24), Font = Esti.FNormal
             };
             Controls.Add(txt);
 
-            Controls.Add(Esti.Sep(268));
+            Controls.Add(Esti.Sep(304));
             Controls.Add(Esti.PanelInfo(
                 "Solo se colocan casetones cuyo centro cae dentro del solido de la losa.\n" +
                 "Los que quedan volando en desniveles se ignoran automaticamente.",
-                278, Esti.ColVerde, 44));
+                314, Esti.ColVerde, 44));
 
-            var bOK  = Esti.Btn("Iniciar", Esti.Acento,  268, 332, 100, 32);
-            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 376, 332,  76, 32);
+            var bOK  = Esti.Btn("Iniciar", Esti.Acento,  268, 374, 100, 32);
+            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 376, 374,  76, 32);
             bOK.Click += (s, e) =>
             {
                 FamiliaSeleccionada = cmb.Text;
@@ -1982,6 +2027,14 @@ namespace PluginEstructural
             bCan.DialogResult = DialogResult.Cancel;
             Controls.AddRange(new System.Windows.Forms.Control[] { bOK, bCan });
             AcceptButton = bOK; CancelButton = bCan;
+
+            ActualizarCombo();
+        }
+
+        private void ActualizarCombo()
+        {
+            var lista = rbAdaptativo.Checked ? _adaptativas : _parametricas;
+            cmb.DataSource = lista.Select(x => x.FamilyName + " : " + x.Name).ToList();
         }
     }
 }

@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("PluginEstructural")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+fbbc4453ae0c9a46820bfe2c3e97f00d5bd7ebca")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d818846e3c89b26d259ec12ed2f8eb45baf58e7d")]
 [assembly: System.Reflection.AssemblyProductAttribute("PluginEstructural")]
 [assembly: System.Reflection.AssemblyTitleAttribute("PluginEstructural")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
