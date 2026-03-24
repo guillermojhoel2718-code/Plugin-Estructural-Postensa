@@ -561,7 +561,11 @@ namespace PluginEstructural
                 panel.AddSeparator();
                 panel.AddItem(new PushButtonData("Casetones", "Colocar\nCasetones", dll,
                     "PluginEstructural.CmdColocarCasetones")
-                    { ToolTip = "Coloca familias adaptativas desde reticula CAD sobre losa" });
+                    { ToolTip = "Coloca familias desde reticula CAD sobre la losa" });
+                panel.AddSeparator();
+                panel.AddItem(new PushButtonData("Renombrar", "Renombrar\nFamilias", dll,
+                    "PluginEstructural.CmdRenombrarFamilias")
+                    { ToolTip = "Renombra familias filtradas agregando prefijos, sufijos y reemplazos de texto" });
                 return Result.Succeeded;
             }
             catch (Exception ex) { TaskDlg.Show("Error", ex.Message); return Result.Failed; }
@@ -2035,6 +2039,230 @@ namespace PluginEstructural
         {
             var lista = rbAdaptativo.Checked ? _adaptativas : _parametricas;
             cmb.DataSource = lista.Select(x => x.FamilyName + " : " + x.Name).ToList();
+        }
+    }
+    // ════════════════════════════════════════════════════════
+    //  CMD 6 — RENOMBRAR FAMILIAS
+    // ════════════════════════════════════════════════════════
+    [Transaction(TransactionMode.Manual)]
+    public class CmdRenombrarFamilias : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string msg, ElementSet es)
+        {
+            var uidoc = data.Application.ActiveUIDocument;
+            var doc   = uidoc.Document;
+
+            var seleccionIds = uidoc.Selection.GetElementIds();
+            var listaFamilias = new List<FamilySymbol>();
+
+            if (seleccionIds.Count > 0)
+            {
+                foreach (var id in seleccionIds)
+                {
+                    var elem = doc.GetElement(id);
+                    if (elem is FamilyInstance fi) listaFamilias.Add(fi.Symbol);
+                    else if (elem is FamilySymbol fs) listaFamilias.Add(fs);
+                }
+            }
+
+            using (var dlg = new VentanaRenombrar(doc, listaFamilias))
+            {
+                if (dlg.ShowDialog() != DialogResult.OK) return Result.Cancelled;
+
+                var cambios = dlg.CambiosPlanificados;
+                if (cambios.Count == 0) return Result.Succeeded;
+
+                bool aplicarATipo = dlg.AplicarATipo;
+
+                using (var t = new Transaction(doc, "Renombrar Familias"))
+                {
+                    t.Start();
+                    int exito = 0;
+                    var familiasProcesadas = new HashSet<ElementId>();
+
+                    foreach (var c in cambios)
+                    {
+                        try
+                        {
+                            if (aplicarATipo)
+                            {
+                                c.Symbol.Name = c.NuevoNombre;
+                                exito++;
+                            }
+                            else
+                            {
+                                var fId = c.Symbol.Family.Id;
+                                if (!familiasProcesadas.Contains(fId))
+                                {
+                                    c.Symbol.Family.Name = c.NuevoNombre;
+                                    familiasProcesadas.Add(fId);
+                                    exito++;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                    t.Commit();
+                    TaskDlg.Show("Renombrar", $"{exito} elementos renombrados.");
+                }
+            }
+            return Result.Succeeded;
+        }
+    }
+
+    internal class CambioNombre
+    {
+        public FamilySymbol Symbol { get; set; }
+        public string NombreOriginal { get; set; }
+        public string NuevoNombre { get; set; }
+    }
+
+    internal class VentanaRenombrar : System.Windows.Forms.Form
+    {
+        public List<CambioNombre> CambiosPlanificados { get; private set; } = new List<CambioNombre>();
+        public bool AplicarATipo => cmbAplicarA.SelectedIndex == 0;
+
+        System.Windows.Forms.TextBox txtPrefijo, txtBuscar, txtReemplazar;
+        System.Windows.Forms.ComboBox cmbSufijo, cmbCategoria;
+        System.Windows.Forms.ComboBox cmbAplicarA;
+        RadioButton rbSel, rbTodo;
+        System.Windows.Forms.DataGridView dgv;
+
+        Document _doc;
+        List<FamilySymbol> _seleccionados;
+        List<FamilySymbol> _todasFamilias;
+
+        public VentanaRenombrar(Document doc, List<FamilySymbol> seleccionados)
+        {
+            _doc = doc;
+            _seleccionados = seleccionados;
+            _todasFamilias = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>().ToList();
+
+            Text = "Renombrar Familias"; Size = new WinSize(550, 640);
+            StartPosition = FormStartPosition.CenterScreen;
+            FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
+            BackColor = Esti.FondoOscuro; ForeColor = Esti.TextoPrincipal;
+            Controls.Add(Esti.HeaderLogo(550));
+
+            Controls.Add(Esti.Titulo("RENOMBRAR FAMILIAS", 16, 80));
+            Controls.Add(Esti.Lbl("Agrega prefijos/sufijos y reemplaza texto.", 16, 108));
+            Controls.Add(Esti.Sep(132));
+
+            // Alcance
+            rbSel = new RadioButton { Text = $"Selección ({_seleccionados.Count})", Location = new WinPoint(16, 142), AutoSize = true, Checked = _seleccionados.Count > 0, ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal, Enabled = _seleccionados.Count > 0 };
+            rbTodo = new RadioButton { Text = "Todo el proyecto", Location = new WinPoint(200, 142), AutoSize = true, Checked = _seleccionados.Count == 0, ForeColor = Esti.TextoPrincipal, Font = Esti.FNormal };
+            Controls.AddRange(new System.Windows.Forms.Control[] { rbSel, rbTodo });
+
+            // Aplicar a
+            Controls.Add(Esti.Lbl("Aplicar cambio a:", 16, 172));
+            cmbAplicarA = new System.Windows.Forms.ComboBox { Location = new WinPoint(16, 194), Size = new WinSize(518, 24), DropDownStyle = ComboBoxStyle.DropDownList, Font = Esti.FNormal };
+            cmbAplicarA.Items.AddRange(new string[] { "Nombre del Tipo (Type)", "Nombre de la Familia (Family)" });
+            cmbAplicarA.SelectedIndex = 0;
+            Controls.Add(cmbAplicarA);
+
+            // Filtro Categoría
+            Controls.Add(Esti.Lbl("Filtrar Categoría:", 16, 224));
+            cmbCategoria = new System.Windows.Forms.ComboBox { Location = new WinPoint(16, 246), Size = new WinSize(518, 24), DropDownStyle = ComboBoxStyle.DropDownList, Font = Esti.FNormal };
+            CargarCategorias();
+            Controls.Add(cmbCategoria);
+
+            // Operaciones
+            int yOp = 282;
+            Controls.Add(Esti.Lbl("Prefijo:", 16, yOp));
+            txtPrefijo = new System.Windows.Forms.TextBox { Location = new WinPoint(16, yOp + 22), Size = new WinSize(250, 24), Font = Esti.FNormal };
+
+            Controls.Add(Esti.Lbl("Sufijo / Unidad:", 284, yOp));
+            cmbSufijo = new System.Windows.Forms.ComboBox { Location = new WinPoint(284, yOp + 22), Size = new WinSize(250, 24), Font = Esti.FNormal };
+            cmbSufijo.Items.AddRange(new string[] { "", "_m", "_cm", "_kg", "_mm", "_lb" });
+
+            int yRe = yOp + 58;
+            Controls.Add(Esti.Lbl("Buscar:", 16, yRe));
+            txtBuscar = new System.Windows.Forms.TextBox { Location = new WinPoint(16, yRe + 22), Size = new WinSize(250, 24), Font = Esti.FNormal };
+
+            Controls.Add(Esti.Lbl("Reemplazar con:", 284, yRe));
+            txtReemplazar = new System.Windows.Forms.TextBox { Location = new WinPoint(284, yRe + 22), Size = new WinSize(250, 24), Font = Esti.FNormal };
+
+            Controls.AddRange(new System.Windows.Forms.Control[] { txtPrefijo, cmbSufijo, txtBuscar, txtReemplazar });
+
+            // Eventos
+            txtPrefijo.TextChanged += Updates;
+            cmbSufijo.TextChanged += Updates;
+            txtBuscar.TextChanged += Updates;
+            txtReemplazar.TextChanged += Updates;
+            rbSel.CheckedChanged += Updates;
+            rbTodo.CheckedChanged += Updates;
+            cmbCategoria.SelectedIndexChanged += Updates;
+            cmbAplicarA.SelectedIndexChanged += Updates;
+
+            // DataGridView
+            dgv = new System.Windows.Forms.DataGridView
+            {
+                Location = new WinPoint(16, yRe + 56), Size = new WinSize(518, 160),
+                BackgroundColor = Esti.FondoPanel, BorderStyle = BorderStyle.None,
+                AllowUserToAddRows = false, AllowUserToDeleteRows = false,
+                ReadOnly = true, RowHeadersVisible = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+            };
+            dgv.Columns.Add("Original", "Original");
+            dgv.Columns.Add("Nuevo", "Nuevo");
+            Controls.Add(dgv);
+
+            var bOK = Esti.Btn("Renombrar", Esti.Acento, 340, yRe + 226, 120, 32);
+            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 468, yRe + 226, 68, 32);
+            bOK.Click += (s, e) => { DialogResult = DialogResult.OK; Close(); };
+            bCan.DialogResult = DialogResult.Cancel;
+            Controls.AddRange(new System.Windows.Forms.Control[] { bOK, bCan });
+            AcceptButton = bOK; CancelButton = bCan;
+
+            ActualizarPreview();
+        }
+
+        void CargarCategorias()
+        {
+            cmbCategoria.Items.Add("Todas");
+            var cats = _todasFamilias.Select(f => f.Category?.Name).Distinct().Where(n => n != null).OrderBy(n => n).ToList();
+            cmbCategoria.Items.AddRange(cats.ToArray());
+            cmbCategoria.SelectedIndex = 0;
+        }
+
+        void Updates(object sender, EventArgs e) => ActualizarPreview();
+
+        void ActualizarPreview()
+        {
+            CambiosPlanificados.Clear();
+            dgv.Rows.Clear();
+
+            var listaBase = rbSel.Checked ? _seleccionados : _todasFamilias;
+            string catFiltrada = cmbCategoria.Text;
+
+            var filtrados = listaBase.Where(f => catFiltrada == "Todas" || (f.Category?.Name == catFiltrada)).ToList();
+
+            string pref = txtPrefijo.Text;
+            string suf = cmbSufijo.Text;
+            string buscar = txtBuscar.Text;
+            string reemp = txtReemplazar.Text;
+            bool calcTipo = AplicarATipo;
+
+            var nombresUnicos = new HashSet<string>();
+
+            foreach (var fs in filtrados)
+            {
+                string original = calcTipo ? fs.Name : fs.Family.Name;
+                if (!calcTipo && nombresUnicos.Contains(original)) continue; // Evitar duplicar filas para familias en el previsualizador
+
+                string nuevo = original;
+                if (!string.IsNullOrEmpty(buscar)) nuevo = nuevo.Replace(buscar, reemp);
+                nuevo = pref + nuevo + suf;
+
+                if (nuevo != original)
+                {
+                    if (!calcTipo) nombresUnicos.Add(original);
+                    CambiosPlanificados.Add(new CambioNombre { Symbol = fs, NombreOriginal = original, NuevoNombre = nuevo });
+                    dgv.Rows.Add(original, nuevo);
+                }
+            }
         }
     }
 }
