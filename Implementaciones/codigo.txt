@@ -1,0 +1,301 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Structure;
+using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Selection;
+using Autodesk.Revit.Attributes;
+using System.Windows.Forms;
+using System.Drawing;
+
+// --- REGLAS DE VENTANAS ---
+using Form = System.Windows.Forms.Form;
+using ComboBox = System.Windows.Forms.ComboBox;
+using TextBox = System.Windows.Forms.TextBox;
+using Button = System.Windows.Forms.Button;
+using Label = System.Windows.Forms.Label;
+using Point = System.Drawing.Point;
+using Size = System.Drawing.Size;
+using Color = System.Drawing.Color;
+using TaskDialog = Autodesk.Revit.UI.TaskDialog;
+
+// ¡Asegúrate de que este nombre sea igual al de tu macro!
+namespace CasetonesDefinitivo 
+{
+    [Transaction(TransactionMode.Manual)]
+    public partial class ThisApplication
+    {
+        private void Module_Startup(object sender, EventArgs e) { }
+        private void Module_Shutdown(object sender, EventArgs e) { }
+
+        // --- INTERFAZ VISUAL ---
+        public class MenuCasetones : Form
+        {
+            public string FamiliaSeleccionada { get; private set; }
+            public string LayerSeleccionado { get; private set; }
+
+            private ComboBox cmbFamilias;
+            private TextBox txtLayer;
+
+            public MenuCasetones(List<string> familiasDisponibles)
+            {
+                this.Text = "Configurador de Casetones Adaptativos";
+                this.Size = new Size(380, 240);
+                this.StartPosition = FormStartPosition.CenterScreen;
+                this.FormBorderStyle = FormBorderStyle.FixedDialog;
+                this.MaximizeBox = false;
+
+                Label lblFamilia = new Label() { Text = "1. Selecciona el Tipo de Casetón (4 Puntos):", Location = new Point(15, 15), AutoSize = true, Font = new Font("Arial", 9, FontStyle.Bold) };
+                cmbFamilias = new ComboBox() { Location = new Point(15, 40), Width = 330, DropDownStyle = ComboBoxStyle.DropDownList };
+                cmbFamilias.DataSource = familiasDisponibles;
+
+                Label lblLayer = new Label() { Text = "2. Escribe el nombre del Layer de AutoCAD:", Location = new Point(15, 80), AutoSize = true, Font = new Font("Arial", 9, FontStyle.Bold) };
+                txtLayer = new TextBox() { Text = "C-V", Location = new Point(15, 105), Width = 330 };
+
+                Button btnOK = new Button() { Text = "Iniciar", DialogResult = DialogResult.OK, Location = new Point(185, 150), Width = 80, BackColor = Color.LightGreen };
+                Button btnCancel = new Button() { Text = "Cancelar", DialogResult = DialogResult.Cancel, Location = new Point(275, 150), Width = 70 };
+
+                this.Controls.Add(lblFamilia);
+                this.Controls.Add(cmbFamilias);
+                this.Controls.Add(lblLayer);
+                this.Controls.Add(txtLayer);
+                this.Controls.Add(btnOK);
+                this.Controls.Add(btnCancel);
+                this.AcceptButton = btnOK;
+                this.CancelButton = btnCancel;
+
+                this.FormClosing += (s, e) => {
+                    FamiliaSeleccionada = cmbFamilias.Text;
+                    LayerSeleccionado = txtLayer.Text;
+                };
+            }
+        }
+
+        // --- FILTROS DE SELECCIÓN ---
+        public class FiltroLosa : ISelectionFilter
+        {
+            public bool AllowElement(Element elem) { return elem is Floor; }
+            public bool AllowReference(Reference reference, XYZ position) { return false; }
+        }
+
+        public class FiltroCAD : ISelectionFilter
+        {
+            public bool AllowElement(Element elem) { return elem is ImportInstance; }
+            public bool AllowReference(Reference reference, XYZ position) { return false; }
+        }
+
+        // --- RUTINA PRINCIPAL ---
+        public void CrearCasetones()
+        {
+            UIDocument uidoc = this.ActiveUIDocument;
+            Document doc = uidoc.Document;
+
+            List<string> listaFamilias = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol))
+                .Cast<FamilySymbol>()
+                .Select(x => x.FamilyName + " : " + x.Name)
+                .OrderBy(x => x).ToList();
+
+            if (listaFamilias.Count == 0) return;
+
+            string nombreFamiliaElegida = "";
+            string layerCasetones = "";
+
+            using (MenuCasetones menu = new MenuCasetones(listaFamilias))
+            {
+                if (menu.ShowDialog() != DialogResult.OK) return; 
+                nombreFamiliaElegida = menu.FamiliaSeleccionada;
+                layerCasetones = menu.LayerSeleccionado;
+            }
+
+            FamilySymbol simboloCaseton = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol))
+                .Cast<FamilySymbol>()
+                .FirstOrDefault(x => (x.FamilyName + " : " + x.Name) == nombreFamiliaElegida);
+
+            try
+            {
+                TaskDialog.Show("Instrucciones", "PASO 1: Toca la LOSA que vas a cortar.\nPASO 2: Toca el archivo CAD en la vista.");
+                
+                Reference refLosa = uidoc.Selection.PickObject(ObjectType.Element, new FiltroLosa(), "PASO 1: Selecciona la Losa a cortar");
+                Floor losa = doc.GetElement(refLosa) as Floor;
+
+                Reference refCAD = uidoc.Selection.PickObject(ObjectType.Element, new FiltroCAD(), "PASO 2: Selecciona el archivo CAD con la retícula");
+                ImportInstance cadInstance = doc.GetElement(refCAD) as ImportInstance;
+
+                double zInferior = losa.get_BoundingBox(null).Min.Z;
+
+                List<List<XYZ>> todosLosGrupos = new List<List<XYZ>>();
+                List<Line> lineasSueltas = new List<Line>();
+
+                ExtraerGeometriaDelCAD(cadInstance.get_Geometry(new Options()), doc, layerCasetones, todosLosGrupos, lineasSueltas);
+
+                if (lineasSueltas.Count > 0)
+                {
+                    List<List<Line>> gruposSueltos = AgruparLineasPorProximidad(lineasSueltas, 0.15); // Tolerancia de 5 cm
+                    foreach (List<Line> grupo in gruposSueltos)
+                    {
+                        List<XYZ> puntosGrupo = new List<XYZ>();
+                        foreach (Line l in grupo) { puntosGrupo.Add(l.GetEndPoint(0)); puntosGrupo.Add(l.GetEndPoint(1)); }
+                        todosLosGrupos.Add(puntosGrupo);
+                    }
+                }
+
+                int casetonesExitosos = 0;
+                int cortesExitosos = 0;
+                int ignorados = 0;
+                List<XYZ> centrosColocados = new List<XYZ>();
+
+                bool esAdaptativo = AdaptiveComponentInstanceUtils.IsAdaptiveFamilySymbol(simboloCaseton);
+
+                using (Transaction t = new Transaction(doc, "Colocación de Casetones (Optimizada)"))
+                {
+                    t.Start();
+                    if (!simboloCaseton.IsActive) simboloCaseton.Activate();
+
+                    foreach (List<XYZ> puntosBrutos in todosLosGrupos)
+                    {
+                        try
+                        {
+                            // 1. Limpiar puntos repetidos
+                            List<XYZ> esquinas = ObtenerEsquinasUnicas(puntosBrutos, 0.15); 
+
+                            // 2. ¡EL GRAN FILTRO OPTIMIZADOR!
+                            // Si la figura no tiene exactamente 4 lados (esquinas), la saltamos para ahorrar recursos.
+                            if (esquinas.Count != 4) 
+                            {
+                                ignorados++;
+                                continue;
+                            }
+
+                            // 3. Ordenar en círculo para que no se cruce la familia
+                            esquinas = OrdenarPuntosCirculo(esquinas);
+
+                            // 4. Asignar puntos y elevación
+                            XYZ p1 = new XYZ(esquinas[0].X, esquinas[0].Y, zInferior);
+                            XYZ p2 = new XYZ(esquinas[1].X, esquinas[1].Y, zInferior);
+                            XYZ p3 = new XYZ(esquinas[2].X, esquinas[2].Y, zInferior);
+                            XYZ p4 = new XYZ(esquinas[3].X, esquinas[3].Y, zInferior);
+
+                            // 5. FILTRO ANTI-DUPLICADOS
+                            XYZ centro = new XYZ((p1.X + p3.X) / 2, (p1.Y + p3.Y) / 2, zInferior);
+                            if (centrosColocados.Any(c => c.DistanceTo(centro) < 0.16)) continue;
+                            centrosColocados.Add(centro);
+
+                            FamilyInstance caseton = null;
+
+                            // 6. COLOCACIÓN DE FAMILIA ADAPTATIVA
+                            if (esAdaptativo)
+                            {
+                                caseton = AdaptiveComponentInstanceUtils.CreateAdaptiveComponentInstance(doc, simboloCaseton);
+                                IList<ElementId> ptIds = AdaptiveComponentInstanceUtils.GetInstancePlacementPointElementRefIds(caseton);
+
+                                if (ptIds.Count == 4)
+                                {
+                                    (doc.GetElement(ptIds[0]) as ReferencePoint).Position = p1;
+                                    (doc.GetElement(ptIds[1]) as ReferencePoint).Position = p2;
+                                    (doc.GetElement(ptIds[2]) as ReferencePoint).Position = p3;
+                                    (doc.GetElement(ptIds[3]) as ReferencePoint).Position = p4;
+                                    casetonesExitosos++;
+                                }
+                            }
+                            else
+                            {
+                                caseton = doc.Create.NewFamilyInstance(centro, simboloCaseton, StructuralType.NonStructural);
+                                casetonesExitosos++;
+                            }
+
+                            // Corte en losa
+                            try { if (caseton != null) { InstanceVoidCutUtils.AddInstanceVoidCut(doc, losa, caseton); cortesExitosos++; } } catch { }
+                        }
+                        catch { }
+                    }
+                    t.Commit();
+                }
+                TaskDialog.Show("¡Éxito!", $"Proceso Terminado.\n\n✔️ {casetonesExitosos} Casetones regulares colocados.\n✔️ {cortesExitosos} Cortes en losa.\n⚠️ {ignorados} Figuras ignoradas (triángulos o irregulares).");
+            }
+            catch (Autodesk.Revit.Exceptions.OperationCanceledException) { }
+        }
+
+        // --- FUNCIONES INTERNAS ---
+        private List<XYZ> ObtenerEsquinasUnicas(List<XYZ> puntosBrutos, double tolerancia)
+        {
+            List<XYZ> unicos = new List<XYZ>();
+            foreach (XYZ p in puntosBrutos)
+            {
+                if (!unicos.Any(u => u.DistanceTo(p) < tolerancia))
+                {
+                    unicos.Add(p);
+                }
+            }
+            return unicos;
+        }
+
+        private List<XYZ> OrdenarPuntosCirculo(List<XYZ> puntos)
+        {
+            double cx = puntos.Average(p => p.X);
+            double cy = puntos.Average(p => p.Y);
+            return puntos.OrderBy(p => Math.Atan2(p.Y - cy, p.X - cx)).ToList();
+        }
+
+        private void ExtraerGeometriaDelCAD(GeometryElement geoElem, Document doc, string targetLayer, List<List<XYZ>> gruposDePuntos, List<Line> lineasSueltas)
+        {
+            if (geoElem == null) return;
+            foreach (GeometryObject go in geoElem)
+            {
+                if (go is Line linea && EsLayerCorrecto(linea, targetLayer, doc)) lineasSueltas.Add(linea);
+                else if (go is PolyLine poly && EsLayerCorrecto(poly, targetLayer, doc)) gruposDePuntos.Add(poly.GetCoordinates().ToList());
+                else if (go is GeometryInstance gi) ExtraerGeometriaDelCAD(gi.GetInstanceGeometry(), doc, targetLayer, gruposDePuntos, lineasSueltas);
+            }
+        }
+
+        private bool EsLayerCorrecto(GeometryObject obj, string targetLayer, Document doc)
+        {
+            if (string.IsNullOrEmpty(targetLayer)) return true;
+            ElementId gsId = obj.GraphicsStyleId;
+            if (gsId != ElementId.InvalidElementId)
+            {
+                GraphicsStyle gs = doc.GetElement(gsId) as GraphicsStyle;
+                if (gs != null && gs.GraphicsStyleCategory != null) return gs.GraphicsStyleCategory.Name.Equals(targetLayer, StringComparison.InvariantCultureIgnoreCase);
+            }
+            return false;
+        }
+
+        private List<List<Line>> AgruparLineasPorProximidad(List<Line> lineas, double tolerancia)
+        {
+            int n = lineas.Count;
+            int[] padre = new int[n];
+            for (int i = 0; i < n; i++) padre[i] = i;
+
+            int Encontrar(int i) { return padre[i] == i ? i : padre[i] = Encontrar(padre[i]); }
+            void Unir(int i, int j)
+            {
+                int raizI = Encontrar(i), raizJ = Encontrar(j);
+                if (raizI != raizJ) padre[raizI] = raizJ;
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                for (int j = i + 1; j < n; j++)
+                {
+                    XYZ p1A = lineas[i].GetEndPoint(0), p1B = lineas[i].GetEndPoint(1);
+                    XYZ p2A = lineas[j].GetEndPoint(0), p2B = lineas[j].GetEndPoint(1);
+
+                    if (p1A.DistanceTo(p2A) < tolerancia || p1A.DistanceTo(p2B) < tolerancia ||
+                        p1B.DistanceTo(p2A) < tolerancia || p1B.DistanceTo(p2B) < tolerancia)
+                    { Unir(i, j); }
+                }
+            }
+
+            Dictionary<int, List<Line>> gruposDic = new Dictionary<int, List<Line>>();
+            for (int i = 0; i < n; i++)
+            {
+                int raiz = Encontrar(i);
+                if (!gruposDic.ContainsKey(raiz)) gruposDic[raiz] = new List<Line>();
+                gruposDic[raiz].Add(lineas[i]);
+            }
+            return gruposDic.Values.ToList();
+        }
+    }
+}

@@ -8,7 +8,9 @@ using System.Text;
 using System.Windows.Forms;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
+using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Selection;
 
 using WinColor  = System.Drawing.Color;
 using WinPoint  = System.Drawing.Point;
@@ -502,6 +504,10 @@ namespace PluginEstructural
                 ? nombre + ": cambio en geometria o posicion"
                 : nombre + " — " + string.Join(", ", cambios.Take(3));
         }
+
+        internal static string AutoDesc(string cat, string tipo,
+            Dictionary<string, string> antes, Dictionary<string, string> despues, string famTipo)
+            => Auto(tipo, antes, despues, famTipo);
     }
 
     // ════════════════════════════════════════════════════════
@@ -545,6 +551,10 @@ namespace PluginEstructural
                 panel.AddItem(new PushButtonData("SharedView", "Vista\nCompartida", dll,
                     "PluginEstructural.CmdCompartirVista")
                     { ToolTip = "Abre Vistas Compartidas de Revit para compartir el modelo online" });
+                panel.AddSeparator();
+                panel.AddItem(new PushButtonData("Casetones", "Colocar\nCasetones", dll,
+                    "PluginEstructural.CmdColocarCasetones")
+                    { ToolTip = "Coloca familias adaptativas desde reticula CAD sobre losa" });
                 return Result.Succeeded;
             }
             catch (Exception ex) { TaskDlg.Show("Error", ex.Message); return Result.Failed; }
@@ -707,7 +717,7 @@ namespace PluginEstructural
                 {
                     if (old == null)
                     { TaskDlg.Show("Sin OLD", "Guarda una version OLD primero."); return Result.Cancelled; }
-                    return Comparar(doc, uidoc, reg, old);
+                    return Comparar(doc, uidoc, reg, old, dlg.UsarGemini);
                 }
                 Limpiar(doc);
                 TaskDlg.Show("Listo", "Colores eliminados.");
@@ -752,7 +762,7 @@ namespace PluginEstructural
             return Result.Succeeded;
         }
 
-        Result Comparar(Document doc, UIDocument uidoc, string reg, string oldDir)
+        Result Comparar(Document doc, UIDocument uidoc, string reg, string oldDir, bool usarGemini)
         {
             string hf = Path.Combine(oldDir, "hashes.csv");
             if (!File.Exists(hf))
@@ -809,6 +819,7 @@ namespace PluginEstructural
                 vistaComp.Name = "COMPARACION_BIM";
                 vistaComp.ViewTemplateId = ElementId.InvalidElementId;
                 vistaComp.DisplayStyle = DisplayStyle.ShadingWithEdges;
+                vistaComp.SaveOrientationAndLock();
                 t.Commit();
             }
 
@@ -862,8 +873,10 @@ namespace PluginEstructural
                 string ft = pd.ContainsKey("Familia y Tipo") ? pd["Familia y Tipo"] : "";
                 string nv = pd.ContainsKey("Nivel / Restriccion") ? pd["Nivel / Restriccion"] : "";
                 string mc = pd.ContainsKey("Marca de Ubicacion") ? pd["Marca de Ubicacion"] : "-";
-                lista.Add(("MODIFICADO",
-                    Gemini.Describir(e.Category?.Name ?? "", e.Name, pa, pd, nv, ft),
+                string descMod = usarGemini
+                    ? Gemini.Describir(e.Category?.Name ?? "", e.Name, pa, pd, nv, ft)
+                    : Gemini.AutoDesc(e.Category?.Name ?? "", e.Name, pa, pd, ft);
+                lista.Add(("MODIFICADO", descMod,
                     e.Category?.Name ?? "", e.Name, e.UniqueId, ft, nv, mc));
             }
             foreach (var uid in elims)
@@ -1315,21 +1328,21 @@ namespace PluginEstructural
     {
         public AccionComp Op { get; private set; }
         public string RutaElegida { get; private set; }
+        public bool UsarGemini { get; private set; }
 
         // Ultima ruta usada en la sesion de Revit
         static string _ultimaRuta = null;
 
         public VentanaComparar(string regActual, Func<string, string> funcBuscarOLD)
         {
-            // Si hay una ruta persistida, usarla como punto de partida
             string ruta = _ultimaRuta ?? regActual;
-            Text = "Comparar Versiones"; Size = new WinSize(468, 540);
+            Text = "Comparar Versiones"; Size = new WinSize(468, 580);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
             BackColor = Esti.FondoOscuro; ForeColor = Esti.TextoPrincipal;
             Controls.Add(Esti.HeaderLogo(468));
             Controls.Add(Esti.Titulo("COMPARADOR DE VERSIONES", 16, 80));
-            Controls.Add(Esti.Lbl("Registro OLD/NEW con reporte Gemini AI y vista limpia.", 16, 108));
+            Controls.Add(Esti.Lbl("Registro OLD/NEW con reporte y vista limpia.", 16, 108));
             Controls.Add(Esti.Sep(132));
 
             Controls.Add(Esti.Lbl("Carpeta de registro de modelos:", 16, 142));
@@ -1346,20 +1359,29 @@ namespace PluginEstructural
             Controls.Add(Esti.PanelInfo(
                 "Flujo:  [Guardar OLD]  >  [Cambios en Revit]  >  [Comparar y generar NEW]",
                 224, Esti.Acento, 34));
-            
-            var bG = Esti.BtnGrande("Guardar version OLD\n    Exporta IFC + estado actual como linea base", 270);
+
+            // ── CheckBox Gemini (desactivado por defecto para ahorrar tokens) ──
+            var chkGemini = new CheckBox
+            {
+                Text = "Incluir descripciones con IA (Gemini)  — consume tokens",
+                Location = new WinPoint(16, 268), AutoSize = true, Checked = false,
+                ForeColor = Esti.TextoSecundario, Font = Esti.FPeque, BackColor = WinColor.Transparent
+            };
+            Controls.Add(chkGemini);
+
+            var bG = Esti.BtnGrande("Guardar version OLD\n    Exporta IFC + estado actual como linea base", 300);
             var bC = Esti.BtnGrande(
-                "Comparar con OLD y generar NEW\n    Colorea + vista limpia + reporte IA + auditoria",
-                334, false, Esti.FondoPanel);
-            var bL = Esti.BtnGrande("Limpiar colores de la vista activa", 398, true, Esti.ColGris);
+                "Comparar con OLD y generar NEW\n    Colorea + vista limpia + reporte + auditoria",
+                364, false, Esti.FondoPanel);
+            var bL = Esti.BtnGrande("Limpiar colores de la vista activa", 428, true, Esti.ColGris);
 
             Action actualizarEstado = () => {
                 string rOld = funcBuscarOLD(txtRuta.Text);
                 bool hay = (rOld != null);
-                if (hay) 
+                if (hay)
                 {
                     string dirInfo = Path.GetFileName(Path.GetDirectoryName(rOld));
-                    if (string.IsNullOrEmpty(dirInfo) || (rOld.EndsWith("OLD", StringComparison.OrdinalIgnoreCase) && Path.GetDirectoryName(rOld) != null)) 
+                    if (string.IsNullOrEmpty(dirInfo) || (rOld.EndsWith("OLD", StringComparison.OrdinalIgnoreCase) && Path.GetDirectoryName(rOld) != null))
                         dirInfo = Path.GetFileName(Path.GetDirectoryName(rOld));
                     lblEst.Text = "Version OLD encontrada: " + dirInfo;
                 }
@@ -1380,17 +1402,17 @@ namespace PluginEstructural
                     if (fbd.ShowDialog() == DialogResult.OK) {
                         txtRuta.Text = fbd.SelectedPath;
                         RutaElegida = fbd.SelectedPath;
-                        _ultimaRuta = fbd.SelectedPath;   // persistir para la proxima vez
+                        _ultimaRuta = fbd.SelectedPath;
                         actualizarEstado();
                     }
                 }
             };
 
-            bG.Click += (s, e) => { _ultimaRuta = RutaElegida; Op = AccionComp.GuardarOLD;       DialogResult = DialogResult.OK; Close(); };
-            bC.Click += (s, e) => { _ultimaRuta = RutaElegida; Op = AccionComp.CompararYGenerar; DialogResult = DialogResult.OK; Close(); };
+            bG.Click += (s, e) => { _ultimaRuta = RutaElegida; UsarGemini = chkGemini.Checked; Op = AccionComp.GuardarOLD;       DialogResult = DialogResult.OK; Close(); };
+            bC.Click += (s, e) => { _ultimaRuta = RutaElegida; UsarGemini = chkGemini.Checked; Op = AccionComp.CompararYGenerar; DialogResult = DialogResult.OK; Close(); };
             bL.Click += (s, e) => { _ultimaRuta = RutaElegida; Op = AccionComp.Limpiar;          DialogResult = DialogResult.OK; Close(); };
-            Controls.Add(Esti.Sep(460));
-            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 384, 468, 70, 28);
+            Controls.Add(Esti.Sep(494));
+            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 384, 502, 70, 28);
             bCan.DialogResult = DialogResult.Cancel;
             Controls.AddRange(new System.Windows.Forms.Control[] { bG, bC, bL, bCan });
             CancelButton = bCan;
@@ -1664,6 +1686,325 @@ namespace PluginEstructural
                 "puede abrir desde cualquier navegador.\n\n" +
                 "No requiere exportar ni subir archivos.");
             return Result.Succeeded;
+        }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  FILTROS DE SELECCIÓN CAD / LOSA
+    // ════════════════════════════════════════════════════════
+    internal class FiltroLosa : ISelectionFilter
+    {
+        public bool AllowElement(Element elem) => elem is Floor;
+        public bool AllowReference(Reference reference, XYZ position) => false;
+    }
+
+    internal class FiltroCAD : ISelectionFilter
+    {
+        public bool AllowElement(Element elem) => elem is ImportInstance;
+        public bool AllowReference(Reference reference, XYZ position) => false;
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  CMD 5 — COLOCAR CASETONES
+    // ════════════════════════════════════════════════════════
+    [Transaction(TransactionMode.Manual)]
+    public class CmdColocarCasetones : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string msg, ElementSet es)
+        {
+            var uidoc = data.Application.ActiveUIDocument;
+            var doc   = uidoc.Document;
+
+            // Listar familias adaptativas de 4 puntos
+            var listaFamilias = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
+                .Select(x => x.FamilyName + " : " + x.Name)
+                .OrderBy(x => x).ToList();
+
+            if (listaFamilias.Count == 0)
+            { TaskDlg.Show("Sin familias", "No hay familias cargadas en el proyecto."); return Result.Cancelled; }
+
+            string nombreFamilia;
+            string layerCasetones;
+
+            using (var dlg = new VentanaCasetones(listaFamilias))
+            {
+                if (dlg.ShowDialog() != DialogResult.OK) return Result.Cancelled;
+                nombreFamilia  = dlg.FamiliaSeleccionada;
+                layerCasetones = dlg.LayerSeleccionado;
+            }
+
+            var simbolo = new FilteredElementCollector(doc)
+                .OfClass(typeof(FamilySymbol)).Cast<FamilySymbol>()
+                .FirstOrDefault(x => (x.FamilyName + " : " + x.Name) == nombreFamilia);
+            if (simbolo == null)
+            { TaskDlg.Show("Error", "No se encontro la familia seleccionada."); return Result.Failed; }
+
+            try
+            {
+                TaskDlg.Show("Instrucciones",
+                    "PASO 1: Selecciona la LOSA que vas a cortar.\n" +
+                    "PASO 2: Selecciona el archivo CAD con la reticula.");
+
+                Reference refLosa = uidoc.Selection.PickObject(ObjectType.Element, new FiltroLosa(), "PASO 1: Selecciona la Losa");
+                Floor losa = doc.GetElement(refLosa) as Floor;
+
+                Reference refCAD = uidoc.Selection.PickObject(ObjectType.Element, new FiltroCAD(), "PASO 2: Selecciona el archivo CAD");
+                ImportInstance cadInstance = doc.GetElement(refCAD) as ImportInstance;
+
+                // Obtener solido de la losa para filtrar por desniveles
+                Solid solidoLosa = Utils.ObtenerSolidos(losa).OrderByDescending(s => s.Volume).FirstOrDefault();
+                double zInferior = losa.get_BoundingBox(null).Min.Z;
+
+                var todosLosGrupos = new List<List<XYZ>>();
+                var lineasSueltas  = new List<Line>();
+
+                ExtraerGeometriaDelCAD(cadInstance.get_Geometry(new Options()), doc, layerCasetones, todosLosGrupos, lineasSueltas);
+
+                if (lineasSueltas.Count > 0)
+                {
+                    var gruposSueltos = AgruparLineasPorProximidad(lineasSueltas, 0.15);
+                    foreach (var grupo in gruposSueltos)
+                    {
+                        var puntosGrupo = new List<XYZ>();
+                        foreach (Line l in grupo) { puntosGrupo.Add(l.GetEndPoint(0)); puntosGrupo.Add(l.GetEndPoint(1)); }
+                        todosLosGrupos.Add(puntosGrupo);
+                    }
+                }
+
+                int casetonesOK = 0, cortesOK = 0, ignorados = 0, fueraLosa = 0;
+                var centrosColocados = new List<XYZ>();
+                bool esAdaptativo = AdaptiveComponentInstanceUtils.IsAdaptiveFamilySymbol(simbolo);
+
+                using (var t = new Transaction(doc, "Colocacion de Casetones"))
+                {
+                    t.Start();
+                    if (!simbolo.IsActive) simbolo.Activate();
+
+                    foreach (var puntosBrutos in todosLosGrupos)
+                    {
+                        try
+                        {
+                            var esquinas = ObtenerEsquinasUnicas(puntosBrutos, 0.15);
+                            if (esquinas.Count != 4) { ignorados++; continue; }
+                            esquinas = OrdenarPuntosCirculo(esquinas);
+
+                            XYZ p1 = new XYZ(esquinas[0].X, esquinas[0].Y, zInferior);
+                            XYZ p2 = new XYZ(esquinas[1].X, esquinas[1].Y, zInferior);
+                            XYZ p3 = new XYZ(esquinas[2].X, esquinas[2].Y, zInferior);
+                            XYZ p4 = new XYZ(esquinas[3].X, esquinas[3].Y, zInferior);
+
+                            XYZ centro = new XYZ((p1.X + p3.X) / 2, (p1.Y + p3.Y) / 2, zInferior);
+
+                            // ── FILTRO ANTI-DUPLICADOS ──
+                            if (centrosColocados.Any(c => c.DistanceTo(centro) < 0.16)) continue;
+
+                            // ── FILTRO DE DESNIVEL: solo colocar si el centro cae dentro del solido de la losa ──
+                            if (solidoLosa != null)
+                            {
+                                double zMid = (solidoLosa.GetBoundingBox().Min.Z + solidoLosa.GetBoundingBox().Max.Z) / 2.0;
+                                XYZ centroTest = new XYZ(centro.X, centro.Y, zMid);
+                                if (!PuntoEnSolido(solidoLosa, centroTest)) { fueraLosa++; continue; }
+                            }
+
+                            centrosColocados.Add(centro);
+                            FamilyInstance caseton = null;
+
+                            if (esAdaptativo)
+                            {
+                                caseton = AdaptiveComponentInstanceUtils.CreateAdaptiveComponentInstance(doc, simbolo);
+                                IList<ElementId> ptIds = AdaptiveComponentInstanceUtils.GetInstancePlacementPointElementRefIds(caseton);
+                                if (ptIds.Count == 4)
+                                {
+                                    (doc.GetElement(ptIds[0]) as ReferencePoint).Position = p1;
+                                    (doc.GetElement(ptIds[1]) as ReferencePoint).Position = p2;
+                                    (doc.GetElement(ptIds[2]) as ReferencePoint).Position = p3;
+                                    (doc.GetElement(ptIds[3]) as ReferencePoint).Position = p4;
+                                    casetonesOK++;
+                                }
+                            }
+                            else
+                            {
+                                caseton = doc.Create.NewFamilyInstance(centro, simbolo, StructuralType.NonStructural);
+                                casetonesOK++;
+                            }
+
+                            try { if (caseton != null) { InstanceVoidCutUtils.AddInstanceVoidCut(doc, losa, caseton); cortesOK++; } } catch { }
+                        }
+                        catch { }
+                    }
+                    t.Commit();
+                }
+
+                TaskDlg.Show("Casetones",
+                    "Proceso terminado.\n\n" +
+                    "\u2714 " + casetonesOK + " casetones colocados\n" +
+                    "\u2714 " + cortesOK + " cortes en losa\n" +
+                    "\u26A0 " + ignorados + " figuras ignoradas (no son 4 lados)\n" +
+                    "\u26A0 " + fueraLosa + " descartados (fuera de la losa / desnivel)");
+            }
+            catch (Autodesk.Revit.Exceptions.OperationCanceledException) { }
+            return Result.Succeeded;
+        }
+
+        // ── Funciones internas ──
+
+        /// Verifica si un punto esta dentro de un solido usando ray-casting vertical
+        static bool PuntoEnSolido(Solid solid, XYZ punto)
+        {
+            try
+            {
+                var bb = solid.GetBoundingBox();
+                // Rayo vertical desde muy abajo hasta muy arriba pasando por el punto
+                double zMin = bb.Min.Z - 1.0;
+                double zMax = bb.Max.Z + 1.0;
+                var lineVertical = Line.CreateBound(
+                    new XYZ(punto.X, punto.Y, zMin),
+                    new XYZ(punto.X, punto.Y, zMax));
+
+                var opts = new SolidCurveIntersectionOptions();
+                var result = solid.IntersectWithCurve(lineVertical, opts);
+
+                // El punto esta dentro si cae entre al menos un par de intersecciones
+                for (int i = 0; i < result.SegmentCount; i++)
+                {
+                    var seg = result.GetCurveSegment(i);
+                    double segZmin = Math.Min(seg.GetEndPoint(0).Z, seg.GetEndPoint(1).Z);
+                    double segZmax = Math.Max(seg.GetEndPoint(0).Z, seg.GetEndPoint(1).Z);
+                    if (punto.Z >= segZmin - 0.01 && punto.Z <= segZmax + 0.01)
+                        return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        List<XYZ> ObtenerEsquinasUnicas(List<XYZ> puntos, double tol)
+        {
+            var unicos = new List<XYZ>();
+            foreach (XYZ p in puntos)
+                if (!unicos.Any(u => u.DistanceTo(p) < tol)) unicos.Add(p);
+            return unicos;
+        }
+
+        List<XYZ> OrdenarPuntosCirculo(List<XYZ> puntos)
+        {
+            double cx = puntos.Average(p => p.X);
+            double cy = puntos.Average(p => p.Y);
+            return puntos.OrderBy(p => Math.Atan2(p.Y - cy, p.X - cx)).ToList();
+        }
+
+        void ExtraerGeometriaDelCAD(GeometryElement geoElem, Document doc, string targetLayer,
+            List<List<XYZ>> gruposDePuntos, List<Line> lineasSueltas)
+        {
+            if (geoElem == null) return;
+            foreach (GeometryObject go in geoElem)
+            {
+                if (go is Line linea && EsLayerCorrecto(linea, targetLayer, doc))
+                    lineasSueltas.Add(linea);
+                else if (go is PolyLine poly && EsLayerCorrecto(poly, targetLayer, doc))
+                    gruposDePuntos.Add(poly.GetCoordinates().ToList());
+                else if (go is GeometryInstance gi)
+                    ExtraerGeometriaDelCAD(gi.GetInstanceGeometry(), doc, targetLayer, gruposDePuntos, lineasSueltas);
+            }
+        }
+
+        bool EsLayerCorrecto(GeometryObject obj, string target, Document doc)
+        {
+            if (string.IsNullOrEmpty(target)) return true;
+            ElementId gsId = obj.GraphicsStyleId;
+            if (gsId != ElementId.InvalidElementId)
+            {
+                var gs = doc.GetElement(gsId) as GraphicsStyle;
+                if (gs?.GraphicsStyleCategory != null)
+                    return gs.GraphicsStyleCategory.Name.Equals(target, StringComparison.InvariantCultureIgnoreCase);
+            }
+            return false;
+        }
+
+        List<List<Line>> AgruparLineasPorProximidad(List<Line> lineas, double tolerancia)
+        {
+            int n = lineas.Count;
+            int[] padre = new int[n];
+            for (int i = 0; i < n; i++) padre[i] = i;
+
+            int Encontrar(int i) => padre[i] == i ? i : padre[i] = Encontrar(padre[i]);
+            void Unir(int a, int b) { int ra = Encontrar(a), rb = Encontrar(b); if (ra != rb) padre[ra] = rb; }
+
+            for (int i = 0; i < n; i++)
+                for (int j = i + 1; j < n; j++)
+                {
+                    XYZ a0 = lineas[i].GetEndPoint(0), a1 = lineas[i].GetEndPoint(1);
+                    XYZ b0 = lineas[j].GetEndPoint(0), b1 = lineas[j].GetEndPoint(1);
+                    if (a0.DistanceTo(b0) < tolerancia || a0.DistanceTo(b1) < tolerancia ||
+                        a1.DistanceTo(b0) < tolerancia || a1.DistanceTo(b1) < tolerancia)
+                        Unir(i, j);
+                }
+
+            var dic = new Dictionary<int, List<Line>>();
+            for (int i = 0; i < n; i++)
+            {
+                int raiz = Encontrar(i);
+                if (!dic.ContainsKey(raiz)) dic[raiz] = new List<Line>();
+                dic[raiz].Add(lineas[i]);
+            }
+            return dic.Values.ToList();
+        }
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  VENTANA CASETONES
+    // ════════════════════════════════════════════════════════
+    internal class VentanaCasetones : System.Windows.Forms.Form
+    {
+        public string FamiliaSeleccionada { get; private set; }
+        public string LayerSeleccionado   { get; private set; }
+
+        public VentanaCasetones(List<string> familias)
+        {
+            Text = "Colocar Casetones"; Size = new WinSize(468, 380);
+            StartPosition = FormStartPosition.CenterScreen;
+            FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
+            BackColor = Esti.FondoOscuro; ForeColor = Esti.TextoPrincipal;
+            Controls.Add(Esti.HeaderLogo(468));
+
+            Controls.Add(Esti.Titulo("COLOCAR CASETONES ADAPTATIVOS", 16, 80));
+            Controls.Add(Esti.Lbl("Coloca familias de 4 puntos desde reticula CAD sobre la losa.", 16, 108));
+            Controls.Add(Esti.Sep(132));
+
+            Controls.Add(Esti.Lbl("Familia adaptativa (4 puntos):", 16, 146));
+            var cmb = new System.Windows.Forms.ComboBox
+            {
+                Location = new WinPoint(16, 168), Size = new WinSize(420, 24),
+                DropDownStyle = ComboBoxStyle.DropDownList, Font = Esti.FNormal
+            };
+            cmb.DataSource = familias;
+            Controls.Add(cmb);
+
+            Controls.Add(Esti.Lbl("Nombre del layer de AutoCAD:", 16, 206));
+            var txt = new System.Windows.Forms.TextBox
+            {
+                Text = "C-V", Location = new WinPoint(16, 228), Size = new WinSize(420, 24), Font = Esti.FNormal
+            };
+            Controls.Add(txt);
+
+            Controls.Add(Esti.Sep(268));
+            Controls.Add(Esti.PanelInfo(
+                "Solo se colocan casetones cuyo centro cae dentro del solido de la losa.\n" +
+                "Los que quedan volando en desniveles se ignoran automaticamente.",
+                278, Esti.ColVerde, 44));
+
+            var bOK  = Esti.Btn("Iniciar", Esti.Acento,  268, 332, 100, 32);
+            var bCan = Esti.Btn("Cancelar", Esti.ColGris, 376, 332,  76, 32);
+            bOK.Click += (s, e) =>
+            {
+                FamiliaSeleccionada = cmb.Text;
+                LayerSeleccionado   = txt.Text;
+                DialogResult = DialogResult.OK; Close();
+            };
+            bCan.DialogResult = DialogResult.Cancel;
+            Controls.AddRange(new System.Windows.Forms.Control[] { bOK, bCan });
+            AcceptButton = bOK; CancelButton = bCan;
         }
     }
 }
