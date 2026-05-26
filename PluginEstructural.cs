@@ -1413,7 +1413,7 @@ namespace PluginEstructural
             new List<BuiltInCategory> { BuiltInCategory.OST_Roofs },
             new List<BuiltInCategory> { BuiltInCategory.OST_StructuralFoundation, BuiltInCategory.OST_StructConnections },
             new List<BuiltInCategory> { BuiltInCategory.OST_Stairs, BuiltInCategory.OST_Ramps },
-            new List<BuiltInCategory> { BuiltInCategory.OST_GenericModel, BuiltInCategory.OST_Parts },
+            new List<BuiltInCategory> { BuiltInCategory.OST_GenericModel, BuiltInCategory.OST_TemporaryStructure },
         };
         static readonly string[] NombresNivel =
         {
@@ -1462,7 +1462,7 @@ namespace PluginEstructural
                     for (int i = 0; i < grupos.Length; i++)
                     {
                         if (!niveles[i] || grupos[i].Count == 0) continue;
-                        for (int j = i; j < grupos.Length; j++)
+                        for (int j = i + 1; j < grupos.Length; j++)
                         {
                             if (!niveles[j] || grupos[j].Count == 0) continue;
                             foreach (var dom in grupos[i])
@@ -1487,7 +1487,7 @@ namespace PluginEstructural
             var bb = dom.get_BoundingBox(null);
             if (bb == null) return 0;
             // Expand bounding box slightly to catch touching elements
-            double tol = 0.05;
+            double tol = 0.2;
             var min = new XYZ(bb.Min.X - tol, bb.Min.Y - tol, bb.Min.Z - tol);
             var max = new XYZ(bb.Max.X + tol, bb.Max.Y + tol, bb.Max.Z + tol);
             var bbf = new BoundingBoxIntersectsFilter(new Outline(min, max));
@@ -1498,14 +1498,36 @@ namespace PluginEstructural
                 if (!bbf.PassesFilter(sub)) continue;
                 try
                 {
-                    if (!JoinGeometryUtils.AreElementsJoined(doc, dom, sub))
-                        JoinGeometryUtils.JoinGeometry(doc, dom, sub);
-                    if (autoSwitch && !JoinGeometryUtils.IsCuttingElementInJoin(doc, dom, sub))
-                        JoinGeometryUtils.SwitchJoinOrder(doc, dom, sub);
-                    cnt++;
+                    // Caso 1: casetones (familia con void)
+                    FamilyInstance fi = sub as FamilyInstance;
+                    if (fi != null &&
+                        InstanceVoidCutUtils.CanBeCutWithVoid(dom) &&
+                        InstanceVoidCutUtils.IsVoidInstanceCuttingElement(fi))
+                    {
+                        var actuales = InstanceVoidCutUtils.GetCuttingVoidInstances(dom);
+                        if (!actuales.Contains(fi.Id))
+                        {
+                            InstanceVoidCutUtils.AddInstanceVoidCut(doc, dom, fi);
+                            cnt++;
+                        }
+                    }
+                    // Caso 2: elementos “sólidos” normales (vigas, muros, etc.)
+                    else
+                    {
+                        if (!JoinGeometryUtils.AreElementsJoined(doc, dom, sub))
+                            JoinGeometryUtils.JoinGeometry(doc, dom, sub);
+
+                        if (autoSwitch && !JoinGeometryUtils.IsCuttingElementInJoin(doc, dom, sub))
+                            JoinGeometryUtils.SwitchJoinOrder(doc, dom, sub);
+
+                        cnt++;
+                    }
                 }
-                catch { }
-            }
+                catch
+                {
+                    
+                }  
+            }   
             return cnt;
         }
     }
